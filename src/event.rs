@@ -1,4 +1,4 @@
-use crate::{AsyncTaskContext, AsyncWork};
+use crate::{AsyncContext, AsyncTaskContext};
 use bevy_ecs::prelude::*;
 use futures::{Stream, StreamExt, task::AtomicWaker};
 use std::{
@@ -291,7 +291,7 @@ where
 
         let waker_tx = Arc::new(AtomicWaker::new());
         let (result_tx, result_rx) = crossbeam_channel::unbounded();
-        let cx = world.resource::<AsyncWork>().create_task_context();
+        let cx = world.resource::<AsyncContext>().create_task_context();
 
         let waker_rx = waker_tx.clone();
         let result_tx_clone = result_tx.clone();

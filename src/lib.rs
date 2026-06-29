@@ -27,36 +27,36 @@ pub mod prelude {
 // AsyncTaskPlugin
 //==================================================================================================
 
-/// Adds [`AsyncContext`] resource to world to handle async jobs spawned from
-/// [`AsyncTaskContext::with_world`], and schedules [`run_async_jobs`] in [`Last`] to dispatch
-/// them.
+/// Adds [`AsyncContext`] resource to world to handle async world tasks spawned from
+/// [`AsyncTaskContext::with_world`], and schedules [`run_async_world_tasks`] in [`Last`] to
+/// dispatch them.
 pub struct AsyncTaskPlugin;
 
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AsyncContext>();
-        app.add_systems(Last, run_async_jobs);
+        app.add_systems(Last, run_async_world_tasks);
     }
 }
 
-/// This system dispatches jobs that need exclusive [`World`] access (any tasks created with
-/// [`AsyncTaskContext::with_world`]). This system can be moved around to control how often and
-/// when these tasks are dispatched.
-pub fn run_async_jobs(world: &mut World) {
-    let mut jobs = Vec::new();
+/// This system dispatches async world tasks that need exclusive [`World`] access
+/// (any tasks created with [`AsyncTaskContext::with_world`]). This system can be moved around to
+/// control how often and when these tasks are dispatched.
+pub fn run_async_world_tasks(world: &mut World) {
+    let mut world_tasks = Vec::new();
 
     loop {
         let work = world.resource_mut::<AsyncContext>();
-        while let Ok(next) = work.work_rx.try_recv() {
-            jobs.push(next);
+        while let Ok(task) = work.world_task_rx.try_recv() {
+            world_tasks.push(task);
         }
 
-        if jobs.is_empty() {
+        if world_tasks.is_empty() {
             break;
         }
 
-        for job in jobs.drain(..) {
-            job(world);
+        for task in world_tasks.drain(..) {
+            task(world);
         }
     }
 }
@@ -170,7 +170,7 @@ impl Default for AsyncContext {
 
 impl AsyncContext {
     /// Create a [`AsyncTaskContext`] which can schedule work onto this struct's
-    /// queue. This work will be run next time [`run_async_jobs`] runs, which by
+    /// queue. This work will be run next time [`run_async_world_tasks`] runs, which by
     /// default happens once per frame in [`Last`].
     pub fn create_task_context(&self) -> AsyncTaskContext {
         AsyncTaskContext {
@@ -197,7 +197,7 @@ pub struct AsyncTaskContext {
 
 impl AsyncTaskContext {
     /// Execute a task with mutable world access. The task `f` is scheduled to
-    /// be run the next time [`run_async_jobs`] is run, which by default happens
+    /// be run the next time [`run_async_world_tasks`] is run, which by default happens
     /// once per frame in the [`Last`] schedule. For this reason, small tasks
     /// should be batched so they aren't scheduled with a frame delay between
     /// them.
@@ -253,7 +253,7 @@ impl<R: Send + 'static> WithWorldFuture<R> {
                 waker_rx.wake();
             }))
             .expect(
-                "Failed to send task to `run_async_jobs`. Did you remove `AsyncContext` resource?",
+                "Failed to send task to `run_async_world_tasks`. Did you remove `AsyncContext` resource?",
             );
 
         Self {
