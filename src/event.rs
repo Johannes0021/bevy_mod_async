@@ -15,10 +15,26 @@ use std::{
 //==================================================================================================
 
 pub trait EventStreamTaskExt {
+    /// Creates an [`EventStream`] for events of type `E`.
+    ///
+    /// ## Event scheduling
+    ///
+    /// This stream is created using `with_world`. As a result:
+    /// - Only events emitted **after this method is called** are observed
+    /// - Events emitted earlier are **not buffered** and are lost
+    ///
+    /// When scheduling, ensure the future is resolved before any systems or tasks that emit `E`.
+    ///
+    /// ## Alternative
+    /// If you need to observe events that may be emitted earlier, create the [`EventStream`]
+    /// manually using access to the `World` and register it before scheduling event producers.
     fn event_stream<E>(&self) -> impl Future<Output = EventStream<E>>
     where
         E: Event + Clone;
 
+    /// Creates an [`EventStream`] for events of type `E` with an associated bundle `B`.
+    ///
+    /// See [`Self::event_stream`] for details on event lifetime and scheduling considerations.
     fn event_stream_with_bundle<E, B>(&self) -> impl Future<Output = EventStream<E, B>>
     where
         E: Event + Clone,
@@ -47,10 +63,26 @@ impl EventStreamTaskExt for AsyncTaskContext {
 //==================================================================================================
 
 pub trait EntityEventStreamTaskExt {
+    /// Creates an [`EventStream`] for entity events of type `E`.
+    ///
+    /// ## Event scheduling
+    ///
+    /// This stream is created using `with_world`. As a result:
+    /// - Only entity events emitted **after this method is called** are observed
+    /// - Events emitted earlier are **not buffered** and are lost
+    ///
+    /// When scheduling, ensure the future is resolved before any systems or tasks that emit `E`.
+    ///
+    /// ## Alternative
+    /// If you need to observe entity events that may be emitted earlier, create the [`EventStream`]
+    /// manually using access to the `World` and register it before scheduling event producers.
     fn entity_event_stream<E>(&self, entity: Entity) -> impl Future<Output = EntityEventStream<E>>
     where
         E: EntityEvent + Clone;
 
+    /// Creates an [`EventStream`] for entity events of type `E` with an associated bundle `B`.
+    ///
+    /// See [`Self::event_stream`] for details on event lifetime and scheduling considerations.
     fn entity_event_stream_with_bundle<E, B>(
         &self,
         entity: Entity,
@@ -85,6 +117,10 @@ impl EntityEventStreamTaskExt for AsyncTaskContext {
 //==================================================================================================
 
 pub trait EventFutureExt: Event + Clone {
+    /// Returns a future that resolves with the **next** event of type `Self`.
+    ///
+    /// See [`EventStreamTaskExt::event_stream`] for details on event lifetime and scheduling
+    /// considerations.
     fn to_future(cx: &AsyncTaskContext) -> impl Future<Output = Result<Self, EventFutureError>>
     where
         Self: Sized,
@@ -92,6 +128,11 @@ pub trait EventFutureExt: Event + Clone {
         async { cx.event_stream().await.next_event().await }
     }
 
+    /// Returns a future that resolves with the **next** event of type `Self` with an associated
+    /// bundle `B`.
+    ///
+    /// See [`EventStreamTaskExt::event_stream_with_bundle`] for details on event lifetime and
+    /// scheduling considerations.
     fn to_future_with_bundle<B>(
         cx: &AsyncTaskContext,
     ) -> impl Future<Output = Result<Self, EventFutureError>>
@@ -115,6 +156,10 @@ impl<T> EventFutureExt for T where T: Event + Clone {}
 //==================================================================================================
 
 pub trait EntityEventFutureExt: Into<Entity> + Clone {
+    /// Returns a future that resolves with the **next** entity event of type `E`.
+    ///
+    /// See [`EntityEventStreamTaskExt::entity_event_stream`] for details on event lifetime and
+    /// scheduling considerations.
     fn observe_future<E>(
         self,
         cx: &AsyncTaskContext,
@@ -126,6 +171,11 @@ pub trait EntityEventFutureExt: Into<Entity> + Clone {
         async { cx.entity_event_stream(self.into()).await.next_event().await }
     }
 
+    /// Returns a future that resolves with the **next** entity event of type `E` with an associated
+    /// bundle `B`.
+    ///
+    /// See [`EntityEventStreamTaskExt::entity_event_stream_with_bundle`] for details on event
+    /// lifetime and scheduling considerations.
     fn observe_future_with_bundle<E, B>(
         self,
         cx: &AsyncTaskContext,
