@@ -22,6 +22,21 @@ impl MessageStreamTaskExt for AsyncTaskContext {
 }
 
 //==================================================================================================
+// MessageFutureExt
+//==================================================================================================
+
+pub trait MessageFutureExt: Message + Clone {
+    fn to_future(cx: &AsyncTaskContext) -> impl Future<Output = Self>
+    where
+        Self: Sized,
+    {
+        async { cx.message_stream().next_message().await }
+    }
+}
+
+impl<T> MessageFutureExt for T where T: Message + Clone {}
+
+//==================================================================================================
 // MessageStreamData
 //==================================================================================================
 

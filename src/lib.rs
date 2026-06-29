@@ -1,5 +1,9 @@
 use bevy_app::{App, Last, Plugin};
-use bevy_ecs::{resource::Resource, system::Commands, world::World};
+use bevy_ecs::{
+    resource::Resource,
+    system::{Commands, Local},
+    world::World,
+};
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use futures::task::AtomicWaker;
 use std::{
@@ -19,7 +23,7 @@ pub mod prelude {
         event::{
             EntityEventFutureExt, EntityEventStreamTaskExt, EventFutureExt, EventStreamTaskExt,
         },
-        message::MessageStreamTaskExt,
+        message::{MessageFutureExt, MessageStreamTaskExt},
     };
 }
 
@@ -42,9 +46,7 @@ impl Plugin for AsyncTaskPlugin {
 /// This system dispatches async world tasks that need exclusive [`World`] access
 /// (any tasks created with [`AsyncTaskContext::with_world`]). This system can be moved around to
 /// control how often and when these tasks are dispatched.
-pub fn run_async_world_tasks(world: &mut World) {
-    let mut world_tasks = Vec::new();
-
+pub fn run_async_world_tasks(world: &mut World, mut world_tasks: Local<Vec<WorldTask>>) {
     loop {
         let work = world.resource_mut::<AsyncContext>();
         while let Ok(task) = work.world_task_rx.try_recv() {
