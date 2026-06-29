@@ -1,13 +1,11 @@
+use crate::{AsyncTaskContext, WithWorldFuture};
+use bevy_ecs::message::{Message, MessageCursor, Messages};
+use futures::{FutureExt, Stream, StreamExt};
 use std::{
     collections::VecDeque,
     pin::Pin,
     task::{Context, Poll},
 };
-
-use bevy_ecs::message::{Message, MessageCursor, Messages};
-use futures::{FutureExt, Stream, StreamExt};
-
-use crate::{AsyncTaskContext, WithWorldFuture};
 
 //==================================================================================================
 // MessageStreamTaskExt

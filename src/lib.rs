@@ -1,12 +1,13 @@
 use bevy_app::{App, Last, Plugin};
 use bevy_ecs::{resource::Resource, system::Commands, world::World};
 use bevy_tasks::AsyncComputeTaskPool;
+use futures::task::AtomicWaker;
 use std::{
     future::Future,
     marker::Send,
     pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    sync::Arc,
+    task::{Context, Poll},
 };
 
 pub mod event;
@@ -183,8 +184,22 @@ impl AsyncTaskContext {
 
 #[must_use = "future must be awaited to yield execution"]
 pub struct WithWorldFuture<R> {
-    waker_tx: Arc<Mutex<Option<Waker>>>,
+    waker_tx: Arc<AtomicWaker>,
     result_rx: crossbeam_channel::Receiver<R>,
+}
+
+impl<R> Future for WithWorldFuture<R> {
+    type Output = R;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.waker_tx.register(cx.waker());
+
+        match self.result_rx.try_recv() {
+            Ok(v) => Poll::Ready(v),
+            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => panic!("channel closed"),
+        }
+    }
 }
 
 impl<R: Send + 'static> WithWorldFuture<R> {
@@ -192,7 +207,7 @@ impl<R: Send + 'static> WithWorldFuture<R> {
     where
         F: FnOnce(&mut World) -> R + Send + 'static,
     {
-        let waker_tx = Arc::new(Mutex::<Option<Waker>>::new(None));
+        let waker_tx = Arc::new(AtomicWaker::new());
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
 
         let waker_rx = waker_tx.clone();
@@ -202,10 +217,7 @@ impl<R: Send + 'static> WithWorldFuture<R> {
                 // this future, and they should have a warning anyway, so we're
                 // going to completely ignore this
                 result_tx.send(f(world)).ok();
-
-                if let Some(w) = &*waker_rx.lock().unwrap() {
-                    w.wake_by_ref();
-                }
+                waker_rx.wake();
             }))
             .expect(
                 "Failed to send task to `run_async_jobs`. Did you remove `AsyncWork` resource?",
@@ -222,21 +234,4 @@ impl<R: Send + 'static> WithWorldFuture<R> {
     /// mutates the world. This allows you to queue many tasks using `with_world` so they can
     /// potentially be dispatched within the same frame.
     pub fn detach(self) {}
-}
-
-impl<R> Future for WithWorldFuture<R> {
-    type Output = R;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        {
-            let mut w = self.waker_tx.lock().unwrap();
-            *w = Some(cx.waker().clone());
-        }
-
-        match self.result_rx.try_recv() {
-            Ok(v) => Poll::Ready(v),
-            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
-            Err(crossbeam_channel::TryRecvError::Disconnected) => panic!("channel closed"),
-        }
-    }
 }

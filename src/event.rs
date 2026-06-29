@@ -1,13 +1,13 @@
 use crate::{AsyncTaskContext, AsyncWork};
 use bevy_ecs::prelude::*;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, task::AtomicWaker};
 use std::{
     fmt,
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    sync::Arc,
+    task::{Context, Poll},
 };
 
 //==================================================================================================
@@ -197,7 +197,7 @@ impl fmt::Display for EventFutureError {
 /// Future that resolves when an event emits.
 #[must_use = "future must be awaited to yield execution"]
 pub struct EventStream<E, B = ()> {
-    waker_tx: Arc<Mutex<Option<Waker>>>,
+    waker_tx: Arc<AtomicWaker>,
     result_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
     cx: AsyncTaskContext,
     observer: Entity,
@@ -215,10 +215,7 @@ impl<E, B> Stream for EventStream<E, B> {
     type Item = Result<E, EventFutureError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        {
-            let mut w = self.waker_tx.lock().unwrap();
-            *w = Some(cx.waker().clone());
-        }
+        self.waker_tx.register(cx.waker());
 
         match self.result_rx.try_recv() {
             Ok(Ok(v)) => Poll::Ready(Some(Ok(v))),
@@ -284,7 +281,7 @@ where
         #[derive(Component)]
         struct EventFutureDespawnMarker;
 
-        let waker_tx = Arc::new(Mutex::<Option<Waker>>::new(None));
+        let waker_tx = Arc::new(AtomicWaker::new());
         let (result_tx, result_rx) = crossbeam_channel::unbounded();
         let cx = world.resource::<AsyncWork>().create_task_context();
 
@@ -292,10 +289,7 @@ where
         let result_tx_clone = result_tx.clone();
         let mut observer = world.add_observer(move |event: On<E, B>| {
             send_with_error_api_guard(&result_tx_clone, Ok(event.event().clone()));
-
-            if let Some(w) = &*waker_rx.lock().unwrap() {
-                w.wake_by_ref();
-            }
+            waker_rx.wake();
         });
 
         observer.insert(EventFutureDespawnMarker);
@@ -308,10 +302,7 @@ where
                     entity: event.event().entity,
                 }),
             );
-
-            if let Some(w) = &*waker_rx.lock().unwrap() {
-                w.wake_by_ref();
-            }
+            waker_rx.wake();
         });
 
         Self {
@@ -332,7 +323,7 @@ where
 /// Future that resolves when an event emits.
 #[must_use = "future must be awaited to yield execution"]
 pub struct EntityEventStream<E, B = ()> {
-    waker_tx: Arc<Mutex<Option<Waker>>>,
+    waker_tx: Arc<AtomicWaker>,
     result_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
     entity: Entity,
     _bundle: PhantomData<fn() -> B>,
@@ -342,10 +333,7 @@ impl<E, B> Stream for EntityEventStream<E, B> {
     type Item = Result<E, EventFutureError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        {
-            let mut w = self.waker_tx.lock().unwrap();
-            *w = Some(cx.waker().clone());
-        }
+        self.waker_tx.register(cx.waker());
 
         match self.result_rx.try_recv() {
             Ok(v) => Poll::Ready(Some(v)),
@@ -383,7 +371,7 @@ where
         #[derive(Component)]
         struct EntityEventFutureDespawnMarker;
 
-        let waker_tx = Arc::new(Mutex::<Option<Waker>>::new(None));
+        let waker_tx = Arc::new(AtomicWaker::new());
         let (result_tx, result_rx) = crossbeam_channel::unbounded();
 
         if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
@@ -391,10 +379,7 @@ where
             let result_tx_clone = result_tx.clone();
             entity_mut.observe(move |event: On<E, B>| {
                 send_with_error_api_guard(&result_tx_clone, Ok(event.event().clone()));
-
-                if let Some(w) = &*waker_rx.lock().unwrap() {
-                    w.wake_by_ref();
-                }
+                waker_rx.wake();
             });
 
             entity_mut.insert(EntityEventFutureDespawnMarker);
@@ -407,10 +392,7 @@ where
                         entity: event.event().entity,
                     }),
                 );
-
-                if let Some(w) = &*waker_rx.lock().unwrap() {
-                    w.wake_by_ref();
-                }
+                waker_rx.wake();
             });
         } else {
             send_with_error_api_guard(
