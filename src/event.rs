@@ -350,8 +350,6 @@ where
             waker_rx.wake();
         });
 
-        observer.insert(EventFutureDespawnMarker);
-
         let waker_rx = waker_tx.clone();
         observer.observe(move |event: On<Remove, EventFutureDespawnMarker>| {
             send_with_error_api_guard(
@@ -362,6 +360,8 @@ where
             );
             waker_rx.wake();
         });
+
+        observer.insert(EventFutureDespawnMarker);
 
         Self {
             waker_tx,
@@ -451,8 +451,6 @@ where
                 waker_rx.wake();
             });
 
-            entity_mut.insert(EntityEventFutureDespawnMarker);
-
             let waker_rx = waker_tx.clone();
             entity_mut.observe(move |event: On<Remove, EntityEventFutureDespawnMarker>| {
                 send_with_error_api_guard(
@@ -463,6 +461,8 @@ where
                 );
                 waker_rx.wake();
             });
+
+            entity_mut.insert(EntityEventFutureDespawnMarker);
 
             false
         } else {
