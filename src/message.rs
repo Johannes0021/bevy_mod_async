@@ -73,6 +73,7 @@ impl<M: Message> Default for MessageStreamState<M> {
 // MessageStream
 //==================================================================================================
 
+#[must_use]
 pub struct MessageStream<M>
 where
     M: Message,
@@ -140,7 +141,7 @@ where
         match self.next().await {
             Some(v) => v,
             // This should be unreachable in this design,
-            // but must be handled because Stream requires Option
+            // but must be handled because Stream requires Option.
             None => unreachable!(),
         }
     }

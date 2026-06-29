@@ -152,8 +152,6 @@ impl SpawnTaskDeferredExt for Commands<'_, '_> {
 /// This resource owns a queue for work that needs exclusive [`World`] access. Calling
 /// [`create_task_context`] will give you a [`AsyncTaskContext`] that can be used to schedule
 /// work onto the queue.
-///
-/// [`create_task_context`]: AsyncContext::create_task_context
 #[derive(Resource)]
 pub struct AsyncContext {
     world_task_tx: crossbeam_channel::Sender<WorldTask>,
@@ -171,9 +169,9 @@ impl Default for AsyncContext {
 }
 
 impl AsyncContext {
-    /// Create a [`AsyncTaskContext`] which can schedule work onto this struct's
-    /// queue. This work will be run next time [`run_async_world_tasks`] runs, which by
-    /// default happens once per frame in [`Last`].
+    /// Create a [`AsyncTaskContext`] which can schedule work onto this struct's queue.
+    /// This work will be run next time [`run_async_world_tasks`] runs,
+    /// which by default happens once per frame in [`Last`].
     pub fn create_task_context(&self) -> AsyncTaskContext {
         AsyncTaskContext {
             world_task_tx: self.world_task_tx.clone(),
@@ -185,25 +183,22 @@ impl AsyncContext {
 // AsyncTaskContext
 //==================================================================================================
 
-/// This is an adapter between async tasks and [`AsyncContext`]. This struct gets
-/// passed as a paramter into all new async tasks and can be used to send work
-/// to get run with exclusive world access. You can create one with
-/// [`AsyncContext::create_task_context`], or this will be done for you when you
-/// spawn a task with [`commands.spawn_task()`].
-///
-/// [`commands.spawn_task()`]: SpawnTaskDeferredExt::spawn_task
+/// This is an adapter between async tasks and [`AsyncContext`].
+/// This struct gets passed as a paramter into all new async tasks and can be used to send work to
+/// get run with exclusive world access.
+/// You can create one with [`AsyncContext::create_task_context`],
+/// or this will be done for you when you spawn a task with [`commands.spawn_task()`].
 #[derive(Clone)]
 pub struct AsyncTaskContext {
     world_task_tx: crossbeam_channel::Sender<WorldTask>,
 }
 
 impl AsyncTaskContext {
-    /// Execute a task with mutable world access. The task `f` is scheduled to
-    /// be run the next time [`run_async_world_tasks`] is run, which by default happens
-    /// once per frame in the [`Last`] schedule. For this reason, small tasks
-    /// should be batched so they aren't scheduled with a frame delay between
-    /// them.
-    #[must_use = "Ignoring `with_world` return value. Either `.await` this value or `.detach()` it to run it in parallel"]
+    /// Execute a task with mutable world access.
+    /// The task `f` is scheduled to be run the next time [`run_async_world_tasks`] is run,
+    /// which by default happens once per frame in the [`Last`] schedule.
+    /// For this reason, small tasks should be batched so they aren't scheduled with a frame delay
+    /// between them.
     pub fn with_world<R, F>(&self, f: F) -> WithWorldFuture<R>
     where
         R: Send + 'static,
@@ -217,7 +212,7 @@ impl AsyncTaskContext {
 // WithWorldFuture
 //==================================================================================================
 
-#[must_use = "future must be awaited to yield execution"]
+#[must_use = "future must be awaited to yield execution or detached"]
 pub struct WithWorldFuture<R> {
     waker_tx: Arc<AtomicWaker>,
     result_rx: crossbeam_channel::Receiver<R>,
@@ -248,10 +243,9 @@ impl<R: Send + 'static> WithWorldFuture<R> {
         let waker_rx = waker_tx.clone();
         work_queue
             .send(Box::new(move |world| {
-                // If this `send` fails, most likely the user forgot to `await`
-                // this future, and they should have a warning anyway, so we're
-                // going to completely ignore this
-                result_tx.send(f(world)).ok();
+                // If this `send` fails, most likely the user forgot to `await` this future,
+                // and they should have a warning anyway, so we're going to completely ignore this.
+                send_with_error_api_guard(&result_tx, f(world));
                 waker_rx.wake();
             }))
             .expect(
@@ -269,4 +263,25 @@ impl<R: Send + 'static> WithWorldFuture<R> {
     /// mutates the world. This allows you to queue many tasks using `with_world` so they can
     /// potentially be dispatched within the same frame.
     pub fn detach(self) {}
+}
+
+//==================================================================================================
+// helper functions
+//==================================================================================================
+
+/// Compile-time structural guard for `crossbeam_channel::SendError<T>`.
+///
+/// This function forces the compiler to depend on the concrete structure of `SendError<T>` so that
+/// any breaking change in the dependency will surface as a compilation error.
+///
+/// It is not a runtime error-handling mechanism and does not guarantee exhaustive handling of all
+/// future error conditions.
+///
+/// More robust than `let _ = tx.send(...)`.
+pub(crate) fn send_with_error_api_guard<T>(tx: &crossbeam_channel::Sender<T>, value: T) {
+    let result = tx.send(value);
+
+    if let Err(crossbeam_channel::SendError(t)) = result {
+        let _ = &t;
+    }
 }

@@ -1,4 +1,4 @@
-use crate::{AsyncContext, AsyncTaskContext};
+use crate::{AsyncContext, AsyncTaskContext, send_with_error_api_guard};
 use bevy_ecs::prelude::*;
 use futures::{Stream, StreamExt, task::AtomicWaker};
 use std::{
@@ -195,7 +195,7 @@ impl fmt::Display for EventFutureError {
 //==================================================================================================
 
 /// Future that resolves when an event emits.
-#[must_use = "future must be awaited to yield execution"]
+#[must_use]
 pub struct EventStream<E, B = ()> {
     waker_tx: Arc<AtomicWaker>,
     result_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
@@ -272,7 +272,7 @@ impl<E, B> EventStream<E, B> {
         match self.next().await {
             Some(v) => v,
             // This should be unreachable in this design,
-            // but must be handled because Stream requires Option
+            // but must be handled because Stream requires Option.
             None => Err(EventFutureError::TrackingMarkerRemoved {
                 entity: self.observer,
             }),
@@ -329,7 +329,7 @@ where
 //==================================================================================================
 
 /// Future that resolves when an event emits.
-#[must_use = "future must be awaited to yield execution"]
+#[must_use]
 pub struct EntityEventStream<E, B = ()> {
     waker_tx: Arc<AtomicWaker>,
     result_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
@@ -373,7 +373,7 @@ impl<E, B> EntityEventStream<E, B> {
         match self.next().await {
             Some(v) => v,
             // This should be unreachable in this design,
-            // but must be handled because Stream requires Option
+            // but must be handled because Stream requires Option.
             None => Err(EventFutureError::TrackingMarkerRemoved {
                 entity: self.entity,
             }),
@@ -437,26 +437,5 @@ where
 impl<E, B> EntityEventStream<E, B> {
     pub fn entity(&self) -> Entity {
         self.entity
-    }
-}
-
-//==================================================================================================
-// helper functions
-//==================================================================================================
-
-/// Compile-time structural guard for `crossbeam_channel::SendError<T>`.
-///
-/// This function forces the compiler to depend on the concrete structure of `SendError<T>` so that
-/// any breaking change in the dependency will surface as a compilation error.
-///
-/// It is not a runtime error-handling mechanism and does not guarantee exhaustive handling of all
-/// future error conditions.
-///
-/// More robust than `let _ = tx.send(...)`.
-fn send_with_error_api_guard<T>(tx: &crossbeam_channel::Sender<T>, value: T) {
-    let result = tx.send(value);
-
-    if let Err(crossbeam_channel::SendError(t)) = result {
-        let _ = &t;
     }
 }
