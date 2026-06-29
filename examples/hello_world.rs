@@ -62,6 +62,7 @@ fn setup(mut commands: Commands) {
 
                 // Await event stream.
                 commands.spawn_task(async |cx| {
+                    // See fn doc: stream starts at creation time and may miss earlier events.
                     let mut events = cx.event_stream::<FullRotation>().await;
                     let mut count = 0;
                     while events.next_event().await.is_ok() {
@@ -87,6 +88,7 @@ fn setup(mut commands: Commands) {
                 let color_a = Color::srgb(0.0, 1.0, 0.0);
                 let color_b = Color::srgb(1.0, 0.0, 0.0);
 
+                // See fn doc: stream starts at creation time and may miss earlier events.
                 let mut events = cx.entity_event_stream::<FullRotation>(entity).await;
                 while events.next_event().await.is_ok() {
                     let next_color = if toggle { color_a } else { color_b };
