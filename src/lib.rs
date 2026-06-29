@@ -77,16 +77,16 @@ pub trait SpawnTaskExt {
     fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
         T: FnOnce(AsyncTaskContext) -> F,
-        F: Future<Output = R> + 'static,
-        R: 'static;
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static;
 }
 
 impl SpawnTaskExt for World {
     fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
         T: FnOnce(AsyncTaskContext) -> F,
-        F: Future<Output = R> + 'static,
-        R: 'static,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
     {
         let context = self.resource::<AsyncContext>().create_task_context();
         AsyncComputeTaskPool::get().spawn(task(context))
@@ -97,8 +97,8 @@ impl SpawnTaskExt for AsyncContext {
     fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
         T: FnOnce(AsyncTaskContext) -> F,
-        F: Future<Output = R> + 'static,
-        R: 'static,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
     {
         let context = self.create_task_context();
         AsyncComputeTaskPool::get().spawn(task(context))
@@ -109,8 +109,8 @@ impl SpawnTaskExt for AsyncTaskContext {
     fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
         T: FnOnce(AsyncTaskContext) -> F,
-        F: Future<Output = R> + 'static,
-        R: 'static,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
     {
         let this = self.clone();
         AsyncComputeTaskPool::get().spawn(task(this))
@@ -128,14 +128,14 @@ pub trait SpawnTaskDeferredExt {
     fn spawn_task<T, F>(&mut self, task: T)
     where
         T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = ()> + 'static;
+        F: Future<Output = ()> + Send + 'static;
 }
 
 impl SpawnTaskDeferredExt for Commands<'_, '_> {
     fn spawn_task<T, F>(&mut self, task: T)
     where
         T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
         self.queue(move |world: &mut World| {
             world.spawn_task(task).detach();
