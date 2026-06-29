@@ -15,7 +15,7 @@ pub mod message;
 
 pub mod prelude {
     pub use crate::{
-        AsyncTaskContext, AsyncTaskPlugin, AsyncWork, SpawnTaskDeferredExt, SpawnTaskExt,
+        AsyncTaskContext, AsyncTaskPlugin, AsyncContext, SpawnTaskDeferredExt, SpawnTaskExt,
         event::{
             EntityEventFutureExt, EntityEventStreamTaskExt, EventFutureExt, EventStreamTaskExt,
         },
@@ -27,14 +27,14 @@ pub mod prelude {
 // AsyncTaskPlugin
 //==================================================================================================
 
-/// Adds [`AsyncWork`] resource to world to handle async jobs spawned from
+/// Adds [`AsyncContext`] resource to world to handle async jobs spawned from
 /// [`AsyncTaskContext::with_world`], and schedules [`run_async_jobs`] in [`Last`] to dispatch
 /// them.
 pub struct AsyncTaskPlugin;
 
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<AsyncWork>();
+        app.init_resource::<AsyncContext>();
         app.add_systems(Last, run_async_jobs);
     }
 }
@@ -46,7 +46,7 @@ pub fn run_async_jobs(world: &mut World) {
     let mut jobs = Vec::new();
 
     loop {
-        let work = world.resource_mut::<AsyncWork>();
+        let work = world.resource_mut::<AsyncContext>();
         while let Ok(next) = work.work_rx.try_recv() {
             jobs.push(next);
         }
@@ -62,10 +62,10 @@ pub fn run_async_jobs(world: &mut World) {
 }
 
 //==================================================================================================
-// Job
+// WorldTask
 //==================================================================================================
 
-type Job = Box<dyn FnOnce(&mut World) + Send>;
+type WorldTask = Box<dyn FnOnce(&mut World) + Send>;
 
 //==================================================================================================
 // SpawnTaskExt
@@ -76,29 +76,29 @@ pub trait SpawnTaskExt {
     /// initialized before this method is called (this is done automatically by [`TaskPoolPlugin`]).
     fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
-        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static;
+        T: FnOnce(AsyncTaskContext) -> F,
+        F: Future<Output = R> + 'static,
+        R: 'static;
 }
 
 impl SpawnTaskExt for World {
     fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
-        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static,
+        T: FnOnce(AsyncTaskContext) -> F,
+        F: Future<Output = R> + 'static,
+        R: 'static,
     {
-        let context = self.resource::<AsyncWork>().create_task_context();
+        let context = self.resource::<AsyncContext>().create_task_context();
         AsyncComputeTaskPool::get().spawn(task(context))
     }
 }
 
-impl SpawnTaskExt for AsyncWork {
+impl SpawnTaskExt for AsyncContext {
     fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
-        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static,
+        T: FnOnce(AsyncTaskContext) -> F,
+        F: Future<Output = R> + 'static,
+        R: 'static,
     {
         let context = self.create_task_context();
         AsyncComputeTaskPool::get().spawn(task(context))
@@ -108,12 +108,12 @@ impl SpawnTaskExt for AsyncWork {
 impl SpawnTaskExt for AsyncTaskContext {
     fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
-        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static,
+        T: FnOnce(AsyncTaskContext) -> F,
+        F: Future<Output = R> + 'static,
+        R: 'static,
     {
-        let context = self.clone();
-        AsyncComputeTaskPool::get().spawn(task(context))
+        let this = self.clone();
+        AsyncComputeTaskPool::get().spawn(task(this))
     }
 }
 
@@ -128,14 +128,14 @@ pub trait SpawnTaskDeferredExt {
     fn spawn_task<T, F>(&mut self, task: T)
     where
         T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = ()> + Send + 'static;
+        F: Future<Output = ()> + 'static;
 }
 
 impl SpawnTaskDeferredExt for Commands<'_, '_> {
     fn spawn_task<T, F>(&mut self, task: T)
     where
         T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = ()> + 'static,
     {
         self.queue(move |world: &mut World| {
             world.spawn_task(task).detach();
@@ -144,34 +144,34 @@ impl SpawnTaskDeferredExt for Commands<'_, '_> {
 }
 
 //==================================================================================================
-// AsyncWork
+// AsyncContext
 //==================================================================================================
 
 /// This resource owns a queue for work that needs exclusive [`World`] access. Calling
 /// [`create_task_context`] will give you a [`AsyncTaskContext`] that can be used to schedule
 /// work onto the queue.
 ///
-/// [`create_task_context`]: AsyncWork::create_task_context
+/// [`create_task_context`]: AsyncContext::create_task_context
 #[derive(Resource)]
-pub struct AsyncWork {
-    work_tx: crossbeam_channel::Sender<Job>,
-    work_rx: crossbeam_channel::Receiver<Job>,
+pub struct AsyncContext {
+    world_task_tx: crossbeam_channel::Sender<WorldTask>,
+    world_task_rx: crossbeam_channel::Receiver<WorldTask>,
 }
 
-impl Default for AsyncWork {
+impl Default for AsyncContext {
     fn default() -> Self {
-        let (work_tx, work_rx) = crossbeam_channel::unbounded();
-        Self { work_tx, work_rx }
+        let (world_task_tx, world_task_rx) = crossbeam_channel::unbounded();
+        Self { world_task_tx, world_task_rx }
     }
 }
 
-impl AsyncWork {
+impl AsyncContext {
     /// Create a [`AsyncTaskContext`] which can schedule work onto this struct's
     /// queue. This work will be run next time [`run_async_jobs`] runs, which by
     /// default happens once per frame in [`Last`].
     pub fn create_task_context(&self) -> AsyncTaskContext {
         AsyncTaskContext {
-            work_queue: self.work_tx.clone(),
+            world_task_tx: self.world_task_tx.clone(),
         }
     }
 }
@@ -180,16 +180,16 @@ impl AsyncWork {
 // AsyncTaskContext
 //==================================================================================================
 
-/// This is an adapter between async tasks and [`AsyncWork`]. This struct gets
+/// This is an adapter between async tasks and [`AsyncContext`]. This struct gets
 /// passed as a paramter into all new async tasks and can be used to send work
 /// to get run with exclusive world access. You can create one with
-/// [`AsyncWork::create_task_context`], or this will be done for you when you
+/// [`AsyncContext::create_task_context`], or this will be done for you when you
 /// spawn a task with [`commands.spawn_task()`].
 ///
 /// [`commands.spawn_task()`]: SpawnTaskDeferredExt::spawn_task
 #[derive(Clone)]
 pub struct AsyncTaskContext {
-    work_queue: crossbeam_channel::Sender<Job>,
+    world_task_tx: crossbeam_channel::Sender<WorldTask>,
 }
 
 impl AsyncTaskContext {
@@ -204,7 +204,7 @@ impl AsyncTaskContext {
         R: Send + 'static,
         F: FnOnce(&mut World) -> R + Send + 'static,
     {
-        WithWorldFuture::new(f, &self.work_queue)
+        WithWorldFuture::new(f, &self.world_task_tx)
     }
 }
 
@@ -233,7 +233,7 @@ impl<R> Future for WithWorldFuture<R> {
 }
 
 impl<R: Send + 'static> WithWorldFuture<R> {
-    fn new<F>(f: F, work_queue: &crossbeam_channel::Sender<Job>) -> Self
+    fn new<F>(f: F, work_queue: &crossbeam_channel::Sender<WorldTask>) -> Self
     where
         F: FnOnce(&mut World) -> R + Send + 'static,
     {
@@ -250,7 +250,7 @@ impl<R: Send + 'static> WithWorldFuture<R> {
                 waker_rx.wake();
             }))
             .expect(
-                "Failed to send task to `run_async_jobs`. Did you remove `AsyncWork` resource?",
+                "Failed to send task to `run_async_jobs`. Did you remove `AsyncContext` resource?",
             );
 
         Self {

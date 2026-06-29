@@ -26,14 +26,14 @@ impl MessageStreamTaskExt for AsyncTaskContext {
 //==================================================================================================
 
 struct MessageStreamData<M: Message> {
-    items: VecDeque<M>,
+    data: VecDeque<M>,
     reader: MessageCursor<M>,
 }
 
 impl<M: Message> Default for MessageStreamData<M> {
     fn default() -> Self {
         MessageStreamData {
-            items: Default::default(),
+            data: Default::default(),
             reader: Default::default(),
         }
     }
@@ -87,20 +87,20 @@ where
         loop {
             match &mut *this.state {
                 MessageStreamState::HasData(data) => {
-                    if let Some(next) = data.items.pop_front() {
+                    if let Some(next) = data.data.pop_front() {
                         return Poll::Ready(Some(next));
                     } else {
                         let mut reader = std::mem::take(&mut data.reader);
                         let waker = cx.waker().clone();
                         let fut = this.cx.with_world(move |world| {
-                            let items = reader
+                            let data = reader
                                 .read(world.resource::<Messages<M>>())
                                 .map(Clone::clone)
                                 .collect::<VecDeque<_>>();
 
                             waker.wake();
 
-                            Box::new(MessageStreamData { items, reader })
+                            Box::new(MessageStreamData { data, reader })
                         });
                         *this.state = MessageStreamState::WaitingForTask(fut);
                     }
