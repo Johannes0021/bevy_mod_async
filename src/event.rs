@@ -248,7 +248,7 @@ impl fmt::Display for EventFutureError {
 #[must_use]
 pub struct EventStream<E, B = ()> {
     waker_tx: Arc<AtomicWaker>,
-    result_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
+    event_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
     cx: AsyncTaskContext,
     observer: Entity,
     observer_despawned: bool,
@@ -267,7 +267,7 @@ impl<E, B> Stream for EventStream<E, B> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.waker_tx.register(cx.waker());
 
-        match self.result_rx.try_recv() {
+        match self.event_rx.try_recv() {
             Ok(Ok(v)) => Poll::Ready(Some(Ok(v))),
 
             Ok(Err(EventFutureError::TrackingMarkerRemoved { entity })) => {
@@ -340,13 +340,13 @@ where
         struct EventFutureDespawnMarker;
 
         let waker_tx = Arc::new(AtomicWaker::new());
-        let (result_tx, result_rx) = crossbeam_channel::unbounded();
+        let (event_tx, event_rx) = crossbeam_channel::unbounded();
         let cx = world.resource::<AsyncContext>().create_task_context();
 
         let waker_rx = waker_tx.clone();
-        let result_tx_clone = result_tx.clone();
+        let event_tx_clone = event_tx.clone();
         let mut observer = world.add_observer(move |event: On<E, B>| {
-            send_with_error_api_guard(&result_tx_clone, Ok(event.event().clone()));
+            send_with_error_api_guard(&event_tx_clone, Ok(event.event().clone()));
             waker_rx.wake();
         });
 
@@ -355,7 +355,7 @@ where
         let waker_rx = waker_tx.clone();
         observer.observe(move |event: On<Remove, EventFutureDespawnMarker>| {
             send_with_error_api_guard(
-                &result_tx,
+                &event_tx,
                 Err(EventFutureError::TrackingMarkerRemoved {
                     entity: event.event().entity,
                 }),
@@ -365,7 +365,7 @@ where
 
         Self {
             waker_tx,
-            result_rx: Box::new(result_rx),
+            event_rx: Box::new(event_rx),
             cx,
             observer: observer.id(),
             observer_despawned: false,
@@ -382,7 +382,7 @@ where
 #[must_use]
 pub struct EntityEventStream<E, B = ()> {
     waker_tx: Arc<AtomicWaker>,
-    result_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
+    event_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
     entity: Entity,
     tracking_marker_removed: bool,
     _bundle: PhantomData<fn() -> B>,
@@ -394,7 +394,7 @@ impl<E, B> Stream for EntityEventStream<E, B> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.waker_tx.register(cx.waker());
 
-        match self.result_rx.try_recv() {
+        match self.event_rx.try_recv() {
             Ok(v) => Poll::Ready(Some(v)),
 
             Err(crossbeam_channel::TryRecvError::Empty) => {
@@ -441,13 +441,13 @@ where
         struct EntityEventFutureDespawnMarker;
 
         let waker_tx = Arc::new(AtomicWaker::new());
-        let (result_tx, result_rx) = crossbeam_channel::unbounded();
+        let (event_tx, event_rx) = crossbeam_channel::unbounded();
 
         let tracking_marker_removed = if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
             let waker_rx = waker_tx.clone();
-            let result_tx_clone = result_tx.clone();
+            let event_tx_clone = event_tx.clone();
             entity_mut.observe(move |event: On<E, B>| {
-                send_with_error_api_guard(&result_tx_clone, Ok(event.event().clone()));
+                send_with_error_api_guard(&event_tx_clone, Ok(event.event().clone()));
                 waker_rx.wake();
             });
 
@@ -456,7 +456,7 @@ where
             let waker_rx = waker_tx.clone();
             entity_mut.observe(move |event: On<Remove, EntityEventFutureDespawnMarker>| {
                 send_with_error_api_guard(
-                    &result_tx,
+                    &event_tx,
                     Err(EventFutureError::TrackingMarkerRemoved {
                         entity: event.event().entity,
                     }),
@@ -467,7 +467,7 @@ where
             false
         } else {
             send_with_error_api_guard(
-                &result_tx,
+                &event_tx,
                 Err(EventFutureError::TrackingMarkerRemoved { entity }),
             );
 
@@ -476,7 +476,7 @@ where
 
         Self {
             waker_tx,
-            result_rx: Box::new(result_rx),
+            event_rx: Box::new(event_rx),
             entity,
             tracking_marker_removed,
             _bundle: PhantomData,
