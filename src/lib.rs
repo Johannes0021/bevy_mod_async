@@ -15,7 +15,7 @@ pub mod message;
 
 pub mod prelude {
     pub use crate::{
-        AsyncTaskContext, AsyncTaskPlugin, AsyncContext, SpawnTaskDeferredExt, SpawnTaskExt,
+        AsyncContext, AsyncTaskContext, AsyncTaskPlugin, SpawnTaskDeferredExt, SpawnTaskExt,
         event::{
             EntityEventFutureExt, EntityEventStreamTaskExt, EventFutureExt, EventStreamTaskExt,
         },
@@ -161,7 +161,10 @@ pub struct AsyncContext {
 impl Default for AsyncContext {
     fn default() -> Self {
         let (world_task_tx, world_task_rx) = crossbeam_channel::unbounded();
-        Self { world_task_tx, world_task_rx }
+        Self {
+            world_task_tx,
+            world_task_rx,
+        }
     }
 }
 
