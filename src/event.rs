@@ -228,7 +228,15 @@ impl<E, B> Stream for EventStream<E, B> {
                 })))
             }
 
-            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                if self.observer_despawned {
+                    Poll::Ready(Some(Err(EventFutureError::TrackingMarkerRemoved {
+                        entity: self.observer,
+                    })))
+                } else {
+                    Poll::Pending
+                }
+            }
 
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
                 let this = self.get_mut();
@@ -326,6 +334,7 @@ pub struct EntityEventStream<E, B = ()> {
     waker_tx: Arc<AtomicWaker>,
     result_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
     entity: Entity,
+    tracking_marker_removed: bool,
     _bundle: PhantomData<fn() -> B>,
 }
 
@@ -338,11 +347,21 @@ impl<E, B> Stream for EntityEventStream<E, B> {
         match self.result_rx.try_recv() {
             Ok(v) => Poll::Ready(Some(v)),
 
-            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                if self.tracking_marker_removed {
+                    Poll::Ready(Some(Err(EventFutureError::TrackingMarkerRemoved {
+                        entity: self.entity,
+                    })))
+                } else {
+                    Poll::Pending
+                }
+            }
 
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                let this = self.get_mut();
+                this.tracking_marker_removed = true;
                 Poll::Ready(Some(Err(EventFutureError::TrackingMarkerRemoved {
-                    entity: self.entity,
+                    entity: this.entity,
                 })))
             }
         }
@@ -374,7 +393,7 @@ where
         let waker_tx = Arc::new(AtomicWaker::new());
         let (result_tx, result_rx) = crossbeam_channel::unbounded();
 
-        if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+        let tracking_marker_removed = if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
             let waker_rx = waker_tx.clone();
             let result_tx_clone = result_tx.clone();
             entity_mut.observe(move |event: On<E, B>| {
@@ -394,17 +413,22 @@ where
                 );
                 waker_rx.wake();
             });
+
+            false
         } else {
             send_with_error_api_guard(
                 &result_tx,
                 Err(EventFutureError::TrackingMarkerRemoved { entity }),
             );
-        }
+
+            true
+        };
 
         Self {
             waker_tx,
             result_rx: Box::new(result_rx),
             entity,
+            tracking_marker_removed,
             _bundle: PhantomData,
         }
     }

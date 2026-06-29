@@ -1,6 +1,6 @@
 use bevy_app::{App, Last, Plugin};
 use bevy_ecs::{resource::Resource, system::Commands, world::World};
-use bevy_tasks::AsyncComputeTaskPool;
+use bevy_tasks::{AsyncComputeTaskPool, Task};
 use futures::task::AtomicWaker;
 use std::{
     future::Future,
@@ -15,7 +15,7 @@ pub mod message;
 
 pub mod prelude {
     pub use crate::{
-        AsyncTaskContext, AsyncTaskPlugin, SpawnTaskExt, SpawnTaskMutExt,
+        AsyncTaskContext, AsyncTaskPlugin, AsyncWork, SpawnTaskDeferredExt, SpawnTaskExt,
         event::{
             EntityEventFutureExt, EntityEventStreamTaskExt, EventFutureExt, EventStreamTaskExt,
         },
@@ -74,24 +74,54 @@ type Job = Box<dyn FnOnce(&mut World) + Send>;
 pub trait SpawnTaskExt {
     /// Spawn a task onto Bevy's async executor. The [`AsyncComputeTaskPool`] must have been
     /// initialized before this method is called (this is done automatically by [`TaskPoolPlugin`]).
-    fn spawn_task<T, F>(&self, task: T)
+    fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
         T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = ()> + Send + 'static;
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static;
 }
 
 impl SpawnTaskExt for World {
-    fn spawn_task<T, F>(&self, task: T)
+    fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
     where
         T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
     {
         let context = self.resource::<AsyncWork>().create_task_context();
-        AsyncComputeTaskPool::get().spawn(task(context)).detach();
+        AsyncComputeTaskPool::get().spawn(task(context))
     }
 }
 
-pub trait SpawnTaskMutExt {
+impl SpawnTaskExt for AsyncWork {
+    fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
+    where
+        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let context = self.create_task_context();
+        AsyncComputeTaskPool::get().spawn(task(context))
+    }
+}
+
+impl SpawnTaskExt for AsyncTaskContext {
+    fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
+    where
+        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let context = self.clone();
+        AsyncComputeTaskPool::get().spawn(task(context))
+    }
+}
+
+//==================================================================================================
+// SpawnTaskDeferredExt
+//==================================================================================================
+
+pub trait SpawnTaskDeferredExt {
     /// Spawn a task onto Bevy's async executor. The [`AsyncComputeTaskPool`] must be have been
     /// initialized before this command is applied (this is done automatically by
     /// [`TaskPoolPlugin`]).
@@ -101,14 +131,14 @@ pub trait SpawnTaskMutExt {
         F: Future<Output = ()> + Send + 'static;
 }
 
-impl SpawnTaskMutExt for Commands<'_, '_> {
+impl SpawnTaskDeferredExt for Commands<'_, '_> {
     fn spawn_task<T, F>(&mut self, task: T)
     where
         T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
         F: Future<Output = ()> + Send + 'static,
     {
         self.queue(move |world: &mut World| {
-            world.spawn_task(task);
+            world.spawn_task(task).detach();
         });
     }
 }
@@ -156,7 +186,7 @@ impl AsyncWork {
 /// [`AsyncWork::create_task_context`], or this will be done for you when you
 /// spawn a task with [`commands.spawn_task()`].
 ///
-/// [`commands.spawn_task()`]: SpawnTaskMutExt::spawn_task
+/// [`commands.spawn_task()`]: SpawnTaskDeferredExt::spawn_task
 #[derive(Clone)]
 pub struct AsyncTaskContext {
     work_queue: crossbeam_channel::Sender<Job>,
