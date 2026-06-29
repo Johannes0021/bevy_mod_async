@@ -300,6 +300,17 @@ impl<E, B> Stream for EventStream<E, B> {
 }
 
 impl<E, B> EventStream<E, B> {
+    pub async fn next_event(&mut self) -> Result<E, EventFutureError> {
+        match self.next().await {
+            Some(v) => v,
+            // This should be unreachable in this design,
+            // but must be handled because Stream requires Option.
+            None => Err(EventFutureError::TrackingMarkerRemoved {
+                entity: self.observer,
+            }),
+        }
+    }
+
     fn ensure_observer_is_scheduled_to_despawn(&mut self) {
         if self.observer_despawned {
             return;
@@ -314,19 +325,6 @@ impl<E, B> EventStream<E, B> {
                 }
             })
             .detach();
-    }
-}
-
-impl<E, B> EventStream<E, B> {
-    pub async fn next_event(&mut self) -> Result<E, EventFutureError> {
-        match self.next().await {
-            Some(v) => v,
-            // This should be unreachable in this design,
-            // but must be handled because Stream requires Option.
-            None => Err(EventFutureError::TrackingMarkerRemoved {
-                entity: self.observer,
-            }),
-        }
     }
 }
 
