@@ -55,15 +55,16 @@ fn setup(mut commands: Commands) {
             if y == 0 && x == 0 {
                 // Await single event.
                 commands.spawn_task(async |cx| {
-                    // See fn doc: stream starts at creation time and may miss earlier events.
-                    let _ = FullRotation::to_future(&cx).await.unwrap();
+                    // Stream starts at creation time and may miss earlier events.
+                    let full_rot_fut = cx.with_world(FullRotation::to_future).await;
+                    let _ = full_rot_fut.await.unwrap();
                     println!("Some entity did a full rotation (Event)");
                 });
 
                 // Await event stream.
                 commands.spawn_task(async |cx| {
-                    // See fn doc: stream starts at creation time and may miss earlier events.
-                    let mut events = cx.event_stream::<FullRotation>().await;
+                    // Stream starts at creation time and may miss earlier events.
+                    let mut events = cx.with_world(FullRotation::event_stream).await;
                     let mut count = 0;
                     while events.next_event().await.is_ok() {
                         count += 1;
@@ -76,8 +77,11 @@ fn setup(mut commands: Commands) {
 
                 // Await single entity event.
                 commands.spawn_task(async move |cx| {
-                    // See fn doc: stream starts at creation time and may miss earlier events.
-                    let e = entity.observe_future::<FullRotation>(&cx).await.unwrap();
+                    // Stream starts at creation time and may miss earlier events.
+                    let full_rot_fut = cx
+                        .with_world(move |w| entity.observe_future::<FullRotation>(w))
+                        .await;
+                    let e = full_rot_fut.await.unwrap();
                     println!("{} did a full rotation (EntityEvent)", e.0);
                 });
             }
@@ -88,15 +92,17 @@ fn setup(mut commands: Commands) {
                 let color_a = Color::srgb(0.0, 1.0, 0.0);
                 let color_b = Color::srgb(1.0, 0.0, 0.0);
 
-                // See fn doc: stream starts at creation time and may miss earlier events.
-                let mut events = cx.entity_event_stream::<FullRotation>(entity).await;
+                // Stream starts at creation time and may miss earlier events.
+                let mut events = cx
+                    .with_world(move |w| entity.event_stream::<FullRotation>(w))
+                    .await;
                 while events.next_event().await.is_ok() {
                     let next_color = if toggle { color_a } else { color_b };
 
                     toggle = !toggle;
 
-                    cx.with_world(move |world| {
-                        let mut entity = world.entity_mut(entity);
+                    cx.with_world(move |w| {
+                        let mut entity = w.entity_mut(entity);
                         let mut sprite = entity.get_mut::<Sprite>().unwrap();
                         sprite.color = next_color;
                     })
@@ -107,7 +113,7 @@ fn setup(mut commands: Commands) {
             // Await single message.
             if y == 0 && x < 5 {
                 commands.spawn_task(async move |cx| {
-                    let text = InitMsg::to_future(&cx).await;
+                    let text = InitMsg::to_future(cx).await;
                     println!("{}: {}", entity, text.0);
                 });
             }
@@ -121,7 +127,7 @@ fn setup(mut commands: Commands) {
     commands.write_message(Text("Message 2"));
 
     commands.spawn_task(async |cx| {
-        let mut messages = cx.message_stream::<Text>();
+        let mut messages = Text::message_stream(cx);
         loop {
             let text = messages.next_message().await;
             println!("{}", text.0);

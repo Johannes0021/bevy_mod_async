@@ -20,10 +20,8 @@ pub mod message;
 pub mod prelude {
     pub use crate::{
         AsyncContext, AsyncTaskContext, AsyncTaskPlugin, SpawnTaskDeferredExt, SpawnTaskExt,
-        event::{
-            EntityEventFutureExt, EntityEventStreamTaskExt, EventFutureExt, EventStreamTaskExt,
-        },
-        message::{MessageFutureExt, MessageStreamTaskExt},
+        event::{EntityEventFutureExt, EventStreamTaskExt},
+        message::MessageStreamTaskExt,
     };
 }
 

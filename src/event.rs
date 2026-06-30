@@ -1,9 +1,8 @@
 use crate::{AsyncContext, AsyncTaskContext, send_with_error_api_guard};
 use bevy_ecs::prelude::*;
-use futures::{Stream, StreamExt, task::AtomicWaker};
+use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
     fmt,
-    future::Future,
     marker::PhantomData,
     pin::Pin,
     sync::Arc,
@@ -14,185 +13,74 @@ use std::{
 // EventStreamTaskExt
 //==================================================================================================
 
-pub trait EventStreamTaskExt {
-    /// Creates an [`EventStream`] for events of type `E`.
-    ///
-    /// ## Event scheduling
-    ///
-    /// This stream is created using `with_world`. As a result:
-    /// - Only events emitted **after this method is called** are observed
-    /// - Events emitted earlier are **not buffered** and are lost
-    ///
-    /// When scheduling, ensure the future is resolved before any systems or tasks that emit `E`.
-    ///
-    /// ## Alternative
-    /// If you need to observe events that may be emitted earlier, create the [`EventStream`]
-    /// manually using access to the `World` and register it before scheduling event producers.
-    fn event_stream<E>(&self) -> impl Future<Output = EventStream<E>>
-    where
-        E: Event + Clone;
-
-    /// Creates an [`EventStream`] for events of type `E` with an associated bundle `B`.
-    ///
-    /// See [`Self::event_stream`] for details on event lifetime and scheduling considerations.
-    fn event_stream_with_bundle<E, B>(&self) -> impl Future<Output = EventStream<E, B>>
-    where
-        E: Event + Clone,
-        B: Bundle;
-}
-
-impl EventStreamTaskExt for AsyncTaskContext {
-    fn event_stream<E>(&self) -> impl Future<Output = EventStream<E>>
-    where
-        E: Event + Clone,
-    {
-        self.with_world(EventStream::new)
+pub trait EventStreamTaskExt: Event + Clone {
+    fn to_future(world: &mut World) -> BoxFuture<'static, Result<Self, EventFutureError>> {
+        let mut stream = Self::event_stream(world);
+        async move { stream.next_event().await }.boxed()
     }
 
-    fn event_stream_with_bundle<E, B>(&self) -> impl Future<Output = EventStream<E, B>>
-    where
-        E: Event + Clone,
-        B: Bundle,
-    {
-        self.with_world(EventStream::new)
-    }
-}
-
-//==================================================================================================
-// EntityEventStreamTaskExt
-//==================================================================================================
-
-pub trait EntityEventStreamTaskExt {
-    /// Creates an [`EntityEventStream`] for entity events of type `E`.
-    ///
-    /// ## Event scheduling
-    ///
-    /// This stream is created using `with_world`. As a result:
-    /// - Only entity events emitted **after this method is called** are observed
-    /// - Events emitted earlier are **not buffered** and are lost
-    ///
-    /// When scheduling, ensure the future is resolved before any systems or tasks that emit `E`.
-    ///
-    /// ## Alternative
-    /// If you need to observe entity events that may be emitted earlier, create the
-    /// [`EntityEventStream`] manually using access to the `World` and register it before scheduling
-    /// event producers.
-    fn entity_event_stream<E>(&self, entity: Entity) -> impl Future<Output = EntityEventStream<E>>
-    where
-        E: EntityEvent + Clone;
-
-    /// Creates an [`EntityEventStream`] for entity events of type `E` with an associated bundle
-    /// `B`.
-    ///
-    /// See [`Self::event_stream`] for details on event lifetime and scheduling considerations.
-    fn entity_event_stream_with_bundle<E, B>(
-        &self,
-        entity: Entity,
-    ) -> impl Future<Output = EntityEventStream<E, B>>
-    where
-        E: EntityEvent + Clone,
-        B: Bundle;
-}
-
-impl EntityEventStreamTaskExt for AsyncTaskContext {
-    fn entity_event_stream<E>(&self, entity: Entity) -> impl Future<Output = EntityEventStream<E>>
-    where
-        E: EntityEvent + Clone,
-    {
-        self.with_world(move |w| EntityEventStream::new(w, entity))
-    }
-
-    fn entity_event_stream_with_bundle<E, B>(
-        &self,
-        entity: Entity,
-    ) -> impl Future<Output = EntityEventStream<E, B>>
-    where
-        E: EntityEvent + Clone,
-        B: Bundle,
-    {
-        self.with_world(move |w| EntityEventStream::new(w, entity))
-    }
-}
-
-//==================================================================================================
-// EventFutureExt
-//==================================================================================================
-
-pub trait EventFutureExt: Event + Clone {
-    /// Returns a future that resolves with the **next** event of type `Self`.
-    ///
-    /// See [`EventStreamTaskExt::event_stream`] for details on event lifetime and scheduling
-    /// considerations.
-    fn to_future(cx: &AsyncTaskContext) -> impl Future<Output = Result<Self, EventFutureError>>
-    where
-        Self: Sized,
-    {
-        async { cx.event_stream().await.next_event().await }
-    }
-
-    /// Returns a future that resolves with the **next** event of type `Self` with an associated
-    /// bundle `B`.
-    ///
-    /// See [`EventStreamTaskExt::event_stream_with_bundle`] for details on event lifetime and
-    /// scheduling considerations.
     fn to_future_with_bundle<B>(
-        cx: &AsyncTaskContext,
-    ) -> impl Future<Output = Result<Self, EventFutureError>>
+        world: &mut World,
+    ) -> BoxFuture<'static, Result<Self, EventFutureError>>
     where
-        Self: Sized,
         B: Bundle,
     {
-        async {
-            cx.event_stream_with_bundle::<Self, B>()
-                .await
-                .next_event()
-                .await
-        }
+        let mut stream = Self::event_stream_with_bundle::<B>(world);
+        async move { stream.next_event().await }.boxed()
+    }
+
+    fn event_stream(world: &mut World) -> EventStream<Self> {
+        EventStream::new(world)
+    }
+
+    fn event_stream_with_bundle<B>(world: &mut World) -> EventStream<Self, B>
+    where
+        B: Bundle,
+    {
+        EventStream::new(world)
     }
 }
 
-impl<T> EventFutureExt for T where T: Event + Clone {}
+impl<T> EventStreamTaskExt for T where T: Event + Clone {}
 
 //==================================================================================================
 // EntityEventFutureExt
 //==================================================================================================
 
 pub trait EntityEventFutureExt: Into<Entity> + Clone {
-    /// Returns a future that resolves with the **next** entity event of type `E`.
-    ///
-    /// See [`EntityEventStreamTaskExt::entity_event_stream`] for details on event lifetime and
-    /// scheduling considerations.
-    fn observe_future<E>(
-        self,
-        cx: &AsyncTaskContext,
-    ) -> impl Future<Output = Result<E, EventFutureError>>
+    fn observe_future<E>(self, world: &mut World) -> BoxFuture<'static, Result<E, EventFutureError>>
     where
-        Self: Sized,
         E: EntityEvent + Clone,
     {
-        async { cx.entity_event_stream(self.into()).await.next_event().await }
+        let mut stream = self.event_stream(world);
+        async move { stream.next_event().await }.boxed()
     }
 
-    /// Returns a future that resolves with the **next** entity event of type `E` with an associated
-    /// bundle `B`.
-    ///
-    /// See [`EntityEventStreamTaskExt::entity_event_stream_with_bundle`] for details on event
-    /// lifetime and scheduling considerations.
     fn observe_future_with_bundle<E, B>(
         self,
-        cx: &AsyncTaskContext,
-    ) -> impl Future<Output = Result<E, EventFutureError>>
+        world: &mut World,
+    ) -> BoxFuture<'static, Result<E, EventFutureError>>
     where
-        Self: Sized,
         E: EntityEvent + Clone,
         B: Bundle,
     {
-        async {
-            cx.entity_event_stream_with_bundle::<E, B>(self.into())
-                .await
-                .next_event()
-                .await
-        }
+        let mut stream = self.event_stream_with_bundle::<E, B>(world);
+        async move { stream.next_event().await }.boxed()
+    }
+
+    fn event_stream<E>(self, world: &mut World) -> EntityEventStream<E>
+    where
+        E: EntityEvent + Clone,
+    {
+        EntityEventStream::new(world, self.into())
+    }
+
+    fn event_stream_with_bundle<E, B>(self, world: &mut World) -> EntityEventStream<E, B>
+    where
+        E: EntityEvent + Clone,
+        B: Bundle,
+    {
+        EntityEventStream::new(world, self.into())
     }
 }
 

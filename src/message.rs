@@ -11,30 +11,18 @@ use std::{
 // MessageStreamTaskExt
 //==================================================================================================
 
-pub trait MessageStreamTaskExt {
-    fn message_stream<M: Message + Clone>(&self) -> MessageStream<M>;
-}
+pub trait MessageStreamTaskExt: Message + Clone {
+    fn to_future(cx: AsyncTaskContext) -> impl Future<Output = Self> {
+        let mut stream = Self::message_stream(cx);
+        async move { stream.next_message().await }
+    }
 
-impl MessageStreamTaskExt for AsyncTaskContext {
-    fn message_stream<M: Message + Clone>(&self) -> MessageStream<M> {
-        MessageStream::<M>::new(self.clone())
+    fn message_stream(cx: AsyncTaskContext) -> MessageStream<Self> {
+        MessageStream::new(cx)
     }
 }
 
-//==================================================================================================
-// MessageFutureExt
-//==================================================================================================
-
-pub trait MessageFutureExt: Message + Clone {
-    fn to_future(cx: &AsyncTaskContext) -> impl Future<Output = Self>
-    where
-        Self: Sized,
-    {
-        async { cx.message_stream().next_message().await }
-    }
-}
-
-impl<T> MessageFutureExt for T where T: Message + Clone {}
+impl<T> MessageStreamTaskExt for T where T: Message + Clone {}
 
 //==================================================================================================
 // MessageStreamData
