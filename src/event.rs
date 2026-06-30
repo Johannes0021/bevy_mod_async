@@ -63,7 +63,7 @@ impl EventStreamTaskExt for AsyncTaskContext {
 //==================================================================================================
 
 pub trait EntityEventStreamTaskExt {
-    /// Creates an [`EventStream`] for entity events of type `E`.
+    /// Creates an [`EntityEventStream`] for entity events of type `E`.
     ///
     /// ## Event scheduling
     ///
@@ -74,13 +74,15 @@ pub trait EntityEventStreamTaskExt {
     /// When scheduling, ensure the future is resolved before any systems or tasks that emit `E`.
     ///
     /// ## Alternative
-    /// If you need to observe entity events that may be emitted earlier, create the [`EventStream`]
-    /// manually using access to the `World` and register it before scheduling event producers.
+    /// If you need to observe entity events that may be emitted earlier, create the
+    /// [`EntityEventStream`] manually using access to the `World` and register it before scheduling
+    /// event producers.
     fn entity_event_stream<E>(&self, entity: Entity) -> impl Future<Output = EntityEventStream<E>>
     where
         E: EntityEvent + Clone;
 
-    /// Creates an [`EventStream`] for entity events of type `E` with an associated bundle `B`.
+    /// Creates an [`EntityEventStream`] for entity events of type `E` with an associated bundle
+    /// `B`.
     ///
     /// See [`Self::event_stream`] for details on event lifetime and scheduling considerations.
     fn entity_event_stream_with_bundle<E, B>(
