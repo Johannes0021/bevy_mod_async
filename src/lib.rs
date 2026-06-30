@@ -90,8 +90,8 @@ impl SpawnTaskExt for World {
         F: Future<Output = R> + Send + 'static,
         R: Send + 'static,
     {
-        let context = self.resource::<AsyncContext>().create_task_context();
-        AsyncComputeTaskPool::get().spawn(task(context))
+        let cx = self.resource::<AsyncContext>().create_task_context();
+        AsyncComputeTaskPool::get().spawn(task(cx))
     }
 }
 
@@ -102,8 +102,8 @@ impl SpawnTaskExt for AsyncContext {
         F: Future<Output = R> + Send + 'static,
         R: Send + 'static,
     {
-        let context = self.create_task_context();
-        AsyncComputeTaskPool::get().spawn(task(context))
+        let cx = self.create_task_context();
+        AsyncComputeTaskPool::get().spawn(task(cx))
     }
 }
 
@@ -199,10 +199,10 @@ impl AsyncTaskContext {
     /// which by default happens once per frame in the [`Last`] schedule.
     /// For this reason, small tasks should be batched so they aren't scheduled with a frame delay
     /// between them.
-    pub fn with_world<R, F>(&self, f: F) -> WithWorldFuture<R>
+    pub fn with_world<F, R>(&self, f: F) -> WithWorldFuture<R>
     where
-        R: Send + 'static,
         F: FnOnce(&mut World) -> R + Send + 'static,
+        R: Send + 'static,
     {
         WithWorldFuture::new(f, &self.world_task_tx)
     }
@@ -232,7 +232,10 @@ impl<R> Future for WithWorldFuture<R> {
     }
 }
 
-impl<R: Send + 'static> WithWorldFuture<R> {
+impl<R> WithWorldFuture<R>
+where
+    R: Send + 'static,
+{
     fn new<F>(f: F, work_queue: &crossbeam_channel::Sender<WorldTask>) -> Self
     where
         F: FnOnce(&mut World) -> R + Send + 'static,
