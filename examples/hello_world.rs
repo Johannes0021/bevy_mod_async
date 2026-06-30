@@ -12,9 +12,7 @@ fn main() {
 }
 
 #[derive(Component)]
-struct Rotating {
-    accumulated: f32,
-}
+struct Rotating(f32);
 
 #[derive(EntityEvent, Clone)]
 struct FullRotation(Entity);
@@ -48,7 +46,7 @@ fn setup(mut commands: Commands) {
                         start_y + (y as f32) * spacing,
                         0.0,
                     ),
-                    Rotating { accumulated: 0.0 },
+                    Rotating(0.0),
                 ))
                 .id();
 
@@ -62,17 +60,14 @@ fn setup(mut commands: Commands) {
                 });
 
                 // Await event stream.
-                commands.spawn_task(async |cx| {
+                commands.spawn_task(async move |cx| {
                     // Stream starts at creation time and may miss earlier events.
                     let mut events = cx.with_world(FullRotation::event_stream).await;
-                    let mut count = 0;
-                    while events.next_event().await.is_ok() {
-                        count += 1;
-                        if count >= 5 {
-                            println!("5 entities did a full rotation (EventStream)");
-                            break;
-                        }
+                    let amount = rows * columns * 2;
+                    for _ in 0..amount {
+                        events.next_event().await.unwrap();
                     }
+                    println!("Received {} FullRotation events (EventStream)", amount);
                 });
 
                 // Await single entity event.
@@ -98,7 +93,6 @@ fn setup(mut commands: Commands) {
                     .await;
                 while events.next_event().await.is_ok() {
                     let next_color = if toggle { color_a } else { color_b };
-
                     toggle = !toggle;
 
                     cx.with_world(move |w| {
@@ -147,11 +141,9 @@ fn rotate_quad(
 
     for (entity, mut t, mut rot) in &mut q {
         t.rotate_z(step);
-
-        rot.accumulated += step;
-
-        while rot.accumulated <= -std::f32::consts::TAU {
-            rot.accumulated += std::f32::consts::TAU;
+        rot.0 += step;
+        while rot.0 <= -std::f32::consts::TAU {
+            rot.0 += std::f32::consts::TAU;
             commands.trigger(FullRotation(entity));
         }
     }
