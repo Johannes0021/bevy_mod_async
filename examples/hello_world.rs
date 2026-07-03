@@ -26,11 +26,30 @@ struct InitMsg(&'static str);
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 
+    // Await single event.
+    commands.spawn_task(async |cx| {
+        // Stream starts at creation time and may miss earlier events.
+        let full_rot_fut = cx.with_world(FullRotation::to_future).await;
+        let _ = full_rot_fut.await.unwrap();
+        println!("Some entity did a full rotation (Event)");
+    });
+
     let columns: usize = 10;
     let rows: usize = 10;
     let spacing = 50.0;
     let start_x = -225.0;
     let start_y = -225.0;
+
+    // Await event stream.
+    commands.spawn_task(async move |cx| {
+        // Stream starts at creation time and may miss earlier events.
+        let mut events = cx.with_world(FullRotation::event_stream).await;
+        let amount = rows * columns * 2;
+        for _ in 0..amount {
+            events.next_event().await.unwrap();
+        }
+        println!("Received {} FullRotation events (EventStream)", amount);
+    });
 
     for y in 0..rows {
         for x in 0..columns {
@@ -51,25 +70,6 @@ fn setup(mut commands: Commands) {
                 .id();
 
             if y == 0 && x == 0 {
-                // Await single event.
-                commands.spawn_task(async |cx| {
-                    // Stream starts at creation time and may miss earlier events.
-                    let full_rot_fut = cx.with_world(FullRotation::to_future).await;
-                    let _ = full_rot_fut.await.unwrap();
-                    println!("Some entity did a full rotation (Event)");
-                });
-
-                // Await event stream.
-                commands.spawn_task(async move |cx| {
-                    // Stream starts at creation time and may miss earlier events.
-                    let mut events = cx.with_world(FullRotation::event_stream).await;
-                    let amount = rows * columns * 2;
-                    for _ in 0..amount {
-                        events.next_event().await.unwrap();
-                    }
-                    println!("Received {} FullRotation events (EventStream)", amount);
-                });
-
                 // Await single entity event.
                 commands.spawn_task(async move |cx| {
                     // Stream starts at creation time and may miss earlier events.
