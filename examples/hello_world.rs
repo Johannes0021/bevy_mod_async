@@ -28,7 +28,7 @@ fn setup(mut commands: Commands) {
 
     // Await single event.
     commands.spawn_task(async |cx| {
-        // Stream starts at creation time and may miss earlier events.
+        // The stream starts at creation time and misses earlier events.
         let full_rot_fut = cx.with_world(FullRotation::to_future).await;
         let _ = full_rot_fut.await.unwrap();
         println!("Some entity did a full rotation (Event)");
@@ -42,7 +42,7 @@ fn setup(mut commands: Commands) {
 
     // Await event stream.
     commands.spawn_task(async move |cx| {
-        // Stream starts at creation time and may miss earlier events.
+        // The stream starts at creation time and misses earlier events.
         let mut events = cx.with_world(FullRotation::event_stream).await;
         let amount = rows * columns * 2;
         for _ in 0..amount {
@@ -72,7 +72,7 @@ fn setup(mut commands: Commands) {
             if y == 0 && x == 0 {
                 // Await single entity event.
                 commands.spawn_task(async move |cx| {
-                    // Stream starts at creation time and may miss earlier events.
+                    // The stream starts at creation time and misses earlier events.
                     let full_rot_fut = cx
                         .with_world(move |w| entity.observe_future::<FullRotation>(w))
                         .await;
@@ -87,7 +87,7 @@ fn setup(mut commands: Commands) {
                 let color_a = Color::srgb(0.0, 1.0, 0.0);
                 let color_b = Color::srgb(1.0, 0.0, 0.0);
 
-                // Stream starts at creation time and may miss earlier events.
+                // The stream starts at creation time and misses earlier events.
                 let mut events = cx
                     .with_world(move |w| entity.event_stream::<FullRotation>(w))
                     .await;
