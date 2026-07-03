@@ -104,8 +104,8 @@ fn setup(mut commands: Commands) {
                 }
             });
 
-            // Await single message.
             if y == 0 && x < 5 {
+                // Await single message.
                 commands.spawn_task(async move |cx| {
                     let text = InitMsg::to_future(cx).await;
                     println!("{}: {}", entity, text.0);
