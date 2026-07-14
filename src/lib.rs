@@ -1,4 +1,4 @@
-use bevy_app::{App, Last, Plugin};
+use bevy_app::{App, Plugin, Update};
 use bevy_ecs::{
     resource::Resource,
     system::{Commands, Local},
@@ -30,14 +30,14 @@ pub mod prelude {
 //==================================================================================================
 
 /// Adds [`AsyncContext`] resource to world to handle async world tasks spawned from
-/// [`AsyncTaskContext::with_world`], and schedules [`run_async_world_tasks`] in [`Last`] to
+/// [`AsyncTaskContext::with_world`], and schedules [`run_async_world_tasks`] in [`Update`] to
 /// dispatch them.
 pub struct AsyncTaskPlugin;
 
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AsyncContext>();
-        app.add_systems(Last, run_async_world_tasks);
+        app.add_systems(Update, run_async_world_tasks);
     }
 }
 
@@ -169,7 +169,7 @@ impl Default for AsyncContext {
 impl AsyncContext {
     /// Create a [`AsyncTaskContext`] which can schedule work onto this struct's queue.
     /// This work will be run next time [`run_async_world_tasks`] runs,
-    /// which by default happens once per frame in [`Last`].
+    /// which by default happens once per frame in [`Update`].
     pub fn create_task_context(&self) -> AsyncTaskContext {
         AsyncTaskContext {
             world_task_tx: self.world_task_tx.clone(),
@@ -194,7 +194,7 @@ pub struct AsyncTaskContext {
 impl AsyncTaskContext {
     /// Execute a task with mutable world access.
     /// The task `f` is scheduled to be run the next time [`run_async_world_tasks`] is run,
-    /// which by default happens once per frame in the [`Last`] schedule.
+    /// which by default happens once per frame in the [`Update`] schedule.
     /// For this reason, small tasks should be batched so they aren't scheduled with a frame delay
     /// between them.
     pub fn with_world<F, R>(&self, f: F) -> WithWorldFuture<R>
