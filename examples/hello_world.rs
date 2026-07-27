@@ -193,7 +193,9 @@ fn setup(mut commands: Commands) {
             if y == 0 && x < 5 {
                 // Await single message.
                 commands.spawn_task(async move |cx| {
-                    let text = InitMsg::to_future(cx).await;
+                    // The stream starts at creation time and may miss earlier messages.
+                    let text_fut = cx.with_world(|w| InitMsg::to_future(w)).await;
+                    let text = text_fut.await;
                     info!("{}: {}", entity, text.0);
                 });
             }
@@ -207,7 +209,8 @@ fn setup(mut commands: Commands) {
     commands.write_message(Text("Message 2"));
 
     commands.spawn_task(async |cx| {
-        let mut messages = Text::message_stream(cx);
+        // The stream starts at creation time and may miss earlier messages.
+        let mut messages = cx.with_world(|w| Text::message_stream(w)).await;
         loop {
             let text = messages.next_message().await;
             info!("{}", text.0);

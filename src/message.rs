@@ -1,9 +1,9 @@
-use crate::{AsyncTaskContext, RunAfter, send_with_error_api_guard};
+use crate::{AsyncContext, AsyncTaskContext, RunAfter, send_with_error_api_guard};
 use bevy_ecs::{
     message::{Message, MessageCursor, Messages},
     world::World,
 };
-use futures::{Stream, StreamExt, task::AtomicWaker};
+use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
     pin::Pin,
     sync::{
@@ -18,13 +18,13 @@ use std::{
 //==================================================================================================
 
 pub trait MessageStreamTaskExt: Message + Clone {
-    fn to_future(cx: AsyncTaskContext) -> impl Future<Output = Self> {
-        let mut stream = Self::message_stream(cx);
-        async move { stream.next_message().await }
+    fn to_future(world: &World) -> BoxFuture<'static, Self> {
+        let mut stream = Self::message_stream(world);
+        async move { stream.next_message().await }.boxed()
     }
 
-    fn message_stream(cx: AsyncTaskContext) -> MessageStream<Self> {
-        MessageStream::new(cx)
+    fn message_stream(world: &World) -> MessageStream<Self> {
+        MessageStream::new(world)
     }
 }
 
@@ -70,7 +70,7 @@ impl<M> MessageStream<M>
 where
     M: Message + Clone,
 {
-    pub fn new(cx: AsyncTaskContext) -> Self {
+    pub fn new(world: &World) -> Self {
         fn read_and_reschedule<MInner>(
             world: &mut World,
             quit_rx: Arc<AtomicBool>,
@@ -108,6 +108,7 @@ where
 
         let reader = MessageCursor::default();
 
+        let cx = world.resource::<AsyncContext>().create_task_context();
         let cx_clone = cx.clone();
         cx.with_world(move |world| {
             read_and_reschedule::<M>(world, quit_rx, waker_rx, message_tx, reader, cx_clone);
