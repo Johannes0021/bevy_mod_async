@@ -29,13 +29,13 @@ fn setup(mut commands: Commands) {
 
     // World access
     commands.spawn_task(async |cx| {
-        let entity_count = cx.with_world(|world| world.entities().len()).await;
+        let entity_count = cx.with_world(|world| world.entity_count()).await;
         info!("World contains {entity_count} entities.");
     });
     commands.spawn_task(async |cx| {
         let ticks = 128;
         let entity_count = cx
-            .with_world_scheduled(RunAfter::UpdateTicks(ticks), |world| world.entities().len())
+            .with_world_scheduled(RunAfter::UpdateTicks(ticks), |world| world.entity_count())
             .await;
         info!("World contains {entity_count} entities after {ticks} update ticks.");
     });
@@ -43,27 +43,27 @@ fn setup(mut commands: Commands) {
         let ticks = 256;
         let entity_count = cx
             .with_world_scheduled(RunAfter::FixedUpdateTicks(ticks), |world| {
-                world.entities().len()
+                world.entity_count()
             })
             .await;
         info!("World contains {entity_count} entities after {ticks} fixed update ticks.");
     });
     commands.spawn_task(async |cx| {
-        let secs = 2;
+        let secs = 5;
         let entity_count = cx
             .with_world_scheduled(
                 RunAfter::UpdateElapsed(Duration::from_secs(secs)),
-                |world| world.entities().len(),
+                |world| world.entity_count(),
             )
             .await;
         info!("World contains {entity_count} entities after {secs} secs elapsed. (update)");
     });
     commands.spawn_task(async |cx| {
-        let secs = 8;
+        let secs = 10;
         let entity_count = cx
             .with_world_scheduled(
                 RunAfter::FixedUpdateElapsed(Duration::from_secs(secs)),
-                |world| world.entities().len(),
+                |world| world.entity_count(),
             )
             .await;
         info!("World contains {entity_count} entities after {secs} secs elapsed. (fixed update)");
