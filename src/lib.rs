@@ -84,6 +84,14 @@ fn receive_scheduled_world_tasks(mut cx: ResMut<AsyncContext>) {
                 &mut cx.scheduled_fixed_update_tasks,
                 Delay::Elapsed(duration),
             ),
+            RunAfter::UpdateElapsedSecs(secs) => (
+                &mut cx.scheduled_update_tasks,
+                Delay::Elapsed(Duration::from_secs_f64(secs)),
+            ),
+            RunAfter::FixedUpdateElapsedSecs(secs) => (
+                &mut cx.scheduled_fixed_update_tasks,
+                Delay::Elapsed(Duration::from_secs_f64(secs)),
+            ),
         };
 
         queue.push_back(ScheduledWorldTask {
@@ -181,6 +189,8 @@ pub enum RunAfter {
     FixedUpdateTicks(usize),
     UpdateElapsed(Duration),
     FixedUpdateElapsed(Duration),
+    UpdateElapsedSecs(f64),
+    FixedUpdateElapsedSecs(f64),
 }
 
 enum Delay {
@@ -328,6 +338,10 @@ impl AsyncTaskContext {
             RunAfter::UpdateElapsed(duration) | RunAfter::FixedUpdateElapsed(duration) => {
                 duration.is_zero()
             }
+
+            RunAfter::UpdateElapsedSecs(secs) | RunAfter::FixedUpdateElapsedSecs(secs) => {
+                *secs <= 0.0
+            }
         };
 
         if ready_to_queue {
@@ -335,6 +349,10 @@ impl AsyncTaskContext {
         } else {
             WithWorldFuture::new_scheduled(delay, &self.scheduled_world_task_tx, f)
         }
+    }
+
+    pub fn delay(&self, delay: RunAfter) -> WithWorldFuture<()> {
+        self.with_world_scheduled(delay, |_| {})
     }
 }
 

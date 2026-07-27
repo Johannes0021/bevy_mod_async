@@ -49,24 +49,67 @@ fn setup(mut commands: Commands) {
         info!("World contains {entity_count} entities after {ticks} fixed update ticks.");
     });
     commands.spawn_task(async |cx| {
-        let secs = 5;
+        let secs = 1;
         let entity_count = cx
             .with_world_scheduled(
                 RunAfter::UpdateElapsed(Duration::from_secs(secs)),
                 |world| world.entity_count(),
             )
             .await;
-        info!("World contains {entity_count} entities after {secs} secs elapsed. (update)");
+        info!("World contains {entity_count} entities after {secs}s elapsed. (update)");
     });
     commands.spawn_task(async |cx| {
-        let secs = 10;
+        let secs = 3;
         let entity_count = cx
             .with_world_scheduled(
                 RunAfter::FixedUpdateElapsed(Duration::from_secs(secs)),
                 |world| world.entity_count(),
             )
             .await;
-        info!("World contains {entity_count} entities after {secs} secs elapsed. (fixed update)");
+        info!("World contains {entity_count} entities after {secs}s elapsed. (fixed update)");
+    });
+    commands.spawn_task(async |cx| {
+        let secs = 7.21;
+        let entity_count = cx
+            .with_world_scheduled(RunAfter::UpdateElapsedSecs(secs), |world| {
+                world.entity_count()
+            })
+            .await;
+        info!("World contains {entity_count} entities after {secs}s elapsed. (update)");
+    });
+    commands.spawn_task(async |cx| {
+        let secs = 10.21;
+        let entity_count = cx
+            .with_world_scheduled(RunAfter::FixedUpdateElapsedSecs(secs), |world| {
+                world.entity_count()
+            })
+            .await;
+        info!("World contains {entity_count} entities after {secs}s elapsed. (fixed update)");
+    });
+
+    // Delay
+    commands.spawn_task(async |cx| {
+        let ticks = 21;
+        let secs = 1.21;
+        let duration = Duration::from_secs_f64(secs);
+
+        cx.delay(RunAfter::UpdateTicks(ticks)).await;
+        info!("Delay: {ticks} ticks (update)");
+
+        cx.delay(RunAfter::FixedUpdateTicks(ticks)).await;
+        info!("Delay: {ticks} ticks (fixed update)");
+
+        cx.delay(RunAfter::UpdateElapsed(duration)).await;
+        info!("Delay: {secs}s elapsed (update Duration)");
+
+        cx.delay(RunAfter::FixedUpdateElapsed(duration)).await;
+        info!("Delay: {secs}s elapsed (fixed update Duration)");
+
+        cx.delay(RunAfter::UpdateElapsedSecs(secs)).await;
+        info!("Delay: {secs}s elapsed (update f64)");
+
+        cx.delay(RunAfter::FixedUpdateElapsedSecs(secs)).await;
+        info!("Delay: {secs}s elapsed (fixed update f64)");
     });
 
     // Await single event.
