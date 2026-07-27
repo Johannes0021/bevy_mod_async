@@ -1,4 +1,4 @@
-use bevy_app::{App, FixedUpdate, Plugin, Update};
+use bevy_app::{App, FixedUpdate, Last, Plugin, Update};
 use bevy_ecs::{
     change_detection::{Res, ResMut},
     resource::Resource,
@@ -40,23 +40,16 @@ pub struct AsyncTaskPlugin;
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AsyncContext>()
-            .add_systems(
-                FixedUpdate,
-                (
-                    fixed_update_and_queue_scheduled_world_tasks,
-                    receive_scheduled_world_tasks,
-                )
-                    .chain(),
-            )
+            .add_systems(FixedUpdate, fixed_update_and_queue_scheduled_world_tasks)
             .add_systems(
                 Update,
                 (
                     update_and_queue_scheduled_world_tasks,
                     run_async_world_tasks,
-                    receive_scheduled_world_tasks,
                 )
                     .chain(),
-            );
+            )
+            .add_systems(Last, receive_scheduled_world_tasks);
     }
 }
 
