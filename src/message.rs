@@ -1,9 +1,15 @@
-use crate::{AsyncTaskContext, WithWorldFuture};
-use bevy_ecs::message::{Message, MessageCursor, Messages};
-use futures::{FutureExt, Stream, StreamExt};
+use crate::{AsyncTaskContext, RunAfter, send_with_error_api_guard};
+use bevy_ecs::{
+    message::{Message, MessageCursor, Messages},
+    world::World,
+};
+use futures::{Stream, StreamExt, task::AtomicWaker};
 use std::{
-    collections::VecDeque,
     pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -25,57 +31,19 @@ pub trait MessageStreamTaskExt: Message + Clone {
 impl<T> MessageStreamTaskExt for T where T: Message + Clone {}
 
 //==================================================================================================
-// MessageStreamData
-//==================================================================================================
-
-struct MessageStreamData<M: Message> {
-    data: VecDeque<M>,
-    reader: MessageCursor<M>,
-}
-
-impl<M: Message> Default for MessageStreamData<M> {
-    fn default() -> Self {
-        MessageStreamData {
-            data: Default::default(),
-            reader: Default::default(),
-        }
-    }
-}
-
-//==================================================================================================
-// MessageStreamState
-//==================================================================================================
-
-enum MessageStreamState<M: Message> {
-    HasData(MessageStreamData<M>),
-    WaitingForTask(WithWorldFuture<Box<MessageStreamData<M>>>),
-}
-
-impl<M: Message> Default for MessageStreamState<M> {
-    fn default() -> Self {
-        Self::HasData(Default::default())
-    }
-}
-
-//==================================================================================================
 // MessageStream
 //==================================================================================================
 
 #[must_use]
-pub struct MessageStream<M>
-where
-    M: Message,
-{
-    cx: AsyncTaskContext,
-    state: Box<MessageStreamState<M>>,
+pub struct MessageStream<M> {
+    quit_tx: Arc<AtomicBool>,
+    waker_tx: Arc<AtomicWaker>,
+    message_rx: Box<crossbeam_channel::Receiver<M>>,
 }
 
-impl<M: Message> MessageStream<M> {
-    pub fn new(cx: AsyncTaskContext) -> Self {
-        Self {
-            cx,
-            state: Default::default(),
-        }
+impl<M> Drop for MessageStream<M> {
+    fn drop(&mut self) {
+        self.quit_tx.store(true, Ordering::Relaxed);
     }
 }
 
@@ -86,37 +54,70 @@ where
     type Item = M;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
+        self.waker_tx.register(cx.waker());
 
-        loop {
-            match &mut *this.state {
-                MessageStreamState::HasData(data) => {
-                    if let Some(next) = data.data.pop_front() {
-                        return Poll::Ready(Some(next));
-                    } else {
-                        let mut reader = std::mem::take(&mut data.reader);
-                        let waker = cx.waker().clone();
-                        let fut = this.cx.with_world(move |world| {
-                            let data = reader
-                                .read(world.resource::<Messages<M>>())
-                                .map(Clone::clone)
-                                .collect::<VecDeque<_>>();
-
-                            waker.wake();
-
-                            Box::new(MessageStreamData { data, reader })
-                        });
-                        *this.state = MessageStreamState::WaitingForTask(fut);
-                    }
-                }
-                MessageStreamState::WaitingForTask(fut) => {
-                    if let Poll::Ready(data) = fut.poll_unpin(cx) {
-                        *this.state = MessageStreamState::HasData(*data);
-                    } else {
-                        return Poll::Pending;
-                    }
-                }
+        match self.message_rx.try_recv() {
+            Ok(v) => Poll::Ready(Some(v)),
+            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                panic!("Failed to receive message. Did you remove `AsyncContext` resource?",)
             }
+        }
+    }
+}
+
+impl<M> MessageStream<M>
+where
+    M: Message + Clone,
+{
+    pub fn new(cx: AsyncTaskContext) -> Self {
+        fn read_and_reschedule<MInner>(
+            world: &mut World,
+            quit_rx: Arc<AtomicBool>,
+            waker_rx: Arc<AtomicWaker>,
+            message_tx: crossbeam_channel::Sender<MInner>,
+            mut reader: MessageCursor<MInner>,
+            cx: AsyncTaskContext,
+        ) where
+            MInner: Message + Clone,
+        {
+            if quit_rx.load(Ordering::Relaxed) {
+                return;
+            }
+
+            for message in reader.read(world.resource::<Messages<MInner>>()) {
+                send_with_error_api_guard(&message_tx, message.clone())
+            }
+
+            waker_rx.wake();
+
+            let cx_clone = cx.clone();
+            cx.with_world_scheduled(RunAfter::UpdateTicks(1), move |world| {
+                read_and_reschedule(world, quit_rx, waker_rx, message_tx, reader, cx_clone);
+            })
+            .detach();
+        }
+
+        let quit_tx = Arc::new(AtomicBool::new(false));
+        let quit_rx = quit_tx.clone();
+
+        let waker_tx = Arc::new(AtomicWaker::new());
+        let waker_rx = waker_tx.clone();
+
+        let (message_tx, message_rx) = crossbeam_channel::unbounded();
+
+        let reader = MessageCursor::default();
+
+        let cx_clone = cx.clone();
+        cx.with_world(move |world| {
+            read_and_reschedule::<M>(world, quit_rx, waker_rx, message_tx, reader, cx_clone);
+        })
+        .detach();
+
+        Self {
+            quit_tx,
+            waker_tx,
+            message_rx: Box::new(message_rx),
         }
     }
 }

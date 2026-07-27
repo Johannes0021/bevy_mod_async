@@ -134,7 +134,6 @@ impl fmt::Display for EventFutureError {
 // EventStream
 //==================================================================================================
 
-/// Future that resolves when an event emits.
 #[must_use]
 pub struct EventStream<E, B = ()> {
     waker_tx: Arc<AtomicWaker>,
@@ -266,7 +265,6 @@ where
 // EntityEventStream
 //==================================================================================================
 
-/// Future that resolves when an event emits.
 #[must_use]
 pub struct EntityEventStream<E, B = ()> {
     waker_tx: Arc<AtomicWaker>,

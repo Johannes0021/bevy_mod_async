@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_mod_async::prelude::*;
+use std::time::Duration;
 
 fn main() {
     App::new()
@@ -26,12 +27,54 @@ struct InitMsg(&'static str);
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 
+    // World access
+    commands.spawn_task(async |cx| {
+        let entity_count = cx.with_world(|world| world.entities().len()).await;
+        info!("World contains {entity_count} entities.");
+    });
+    commands.spawn_task(async |cx| {
+        let ticks = 128;
+        let entity_count = cx
+            .with_world_scheduled(RunAfter::UpdateTicks(ticks), |world| world.entities().len())
+            .await;
+        info!("World contains {entity_count} entities after {ticks} update ticks.");
+    });
+    commands.spawn_task(async |cx| {
+        let ticks = 256;
+        let entity_count = cx
+            .with_world_scheduled(RunAfter::FixedUpdateTicks(ticks), |world| {
+                world.entities().len()
+            })
+            .await;
+        info!("World contains {entity_count} entities after {ticks} fixed update ticks.");
+    });
+    commands.spawn_task(async |cx| {
+        let secs = 2;
+        let entity_count = cx
+            .with_world_scheduled(
+                RunAfter::UpdateElapsed(Duration::from_secs(secs)),
+                |world| world.entities().len(),
+            )
+            .await;
+        info!("World contains {entity_count} entities after {secs} secs elapsed. (update)");
+    });
+    commands.spawn_task(async |cx| {
+        let secs = 8;
+        let entity_count = cx
+            .with_world_scheduled(
+                RunAfter::FixedUpdateElapsed(Duration::from_secs(secs)),
+                |world| world.entities().len(),
+            )
+            .await;
+        info!("World contains {entity_count} entities after {secs} secs elapsed. (fixed update)");
+    });
+
     // Await single event.
     commands.spawn_task(async |cx| {
         // The stream starts at creation time and misses earlier events.
         let full_rot_fut = cx.with_world(FullRotation::to_future).await;
         let _ = full_rot_fut.await.unwrap();
-        println!("Some entity did a full rotation (Event)");
+        info!("Some entity did a full rotation (Event)");
     });
 
     let columns: usize = 10;
@@ -48,7 +91,7 @@ fn setup(mut commands: Commands) {
         for _ in 0..amount {
             events.next_event().await.unwrap();
         }
-        println!("Received {} FullRotation events (EventStream)", amount);
+        info!("Received {} FullRotation events (EventStream)", amount);
     });
 
     for y in 0..rows {
@@ -77,7 +120,7 @@ fn setup(mut commands: Commands) {
                         .with_world(move |w| entity.observe_future::<FullRotation>(w))
                         .await;
                     let e = full_rot_fut.await.unwrap();
-                    println!("{} did a full rotation (EntityEvent)", e.0);
+                    info!("{} did a full rotation (EntityEvent)", e.0);
                 });
             }
 
@@ -108,7 +151,7 @@ fn setup(mut commands: Commands) {
                 // Await single message.
                 commands.spawn_task(async move |cx| {
                     let text = InitMsg::to_future(cx).await;
-                    println!("{}: {}", entity, text.0);
+                    info!("{}: {}", entity, text.0);
                 });
             }
         }
@@ -124,7 +167,7 @@ fn setup(mut commands: Commands) {
         let mut messages = Text::message_stream(cx);
         loop {
             let text = messages.next_message().await;
-            println!("{}", text.0);
+            info!("{}", text.0);
         }
     });
 
