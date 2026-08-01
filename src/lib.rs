@@ -70,37 +70,6 @@ pub fn run_async_world_tasks(world: &mut World, mut world_tasks: Local<Vec<World
     }
 }
 
-fn receive_scheduled_world_tasks(mut cx: ResMut<AsyncContext>) {
-    while let Ok(scheduled_task) = cx.scheduled_world_task_rx.try_recv() {
-        let (queue, delay) = match scheduled_task.delay {
-            RunAfter::UpdateTicks(ticks) => (&mut cx.scheduled_update_tasks, Delay::Ticks(ticks)),
-            RunAfter::FixedUpdateTicks(ticks) => {
-                (&mut cx.scheduled_fixed_update_tasks, Delay::Ticks(ticks))
-            }
-            RunAfter::UpdateElapsed(duration) => {
-                (&mut cx.scheduled_update_tasks, Delay::Elapsed(duration))
-            }
-            RunAfter::FixedUpdateElapsed(duration) => (
-                &mut cx.scheduled_fixed_update_tasks,
-                Delay::Elapsed(duration),
-            ),
-            RunAfter::UpdateElapsedSecs(secs) => (
-                &mut cx.scheduled_update_tasks,
-                Delay::Elapsed(Duration::from_secs_f64(secs)),
-            ),
-            RunAfter::FixedUpdateElapsedSecs(secs) => (
-                &mut cx.scheduled_fixed_update_tasks,
-                Delay::Elapsed(Duration::from_secs_f64(secs)),
-            ),
-        };
-
-        queue.push_back(ScheduledWorldTask {
-            delay,
-            task: scheduled_task.task,
-        });
-    }
-}
-
 fn update_and_queue_scheduled_world_tasks(mut cx: ResMut<AsyncContext>, time: Res<Time>) {
     if cx.scheduled_update_tasks.is_empty() {
         return;
@@ -166,6 +135,37 @@ fn update_and_queue_scheduled_world_tasks_helper(
         } else {
             i += 1;
         }
+    }
+}
+
+fn receive_scheduled_world_tasks(mut cx: ResMut<AsyncContext>) {
+    while let Ok(scheduled_task) = cx.scheduled_world_task_rx.try_recv() {
+        let (queue, delay) = match scheduled_task.delay {
+            RunAfter::UpdateTicks(ticks) => (&mut cx.scheduled_update_tasks, Delay::Ticks(ticks)),
+            RunAfter::FixedUpdateTicks(ticks) => {
+                (&mut cx.scheduled_fixed_update_tasks, Delay::Ticks(ticks))
+            }
+            RunAfter::UpdateElapsed(duration) => {
+                (&mut cx.scheduled_update_tasks, Delay::Elapsed(duration))
+            }
+            RunAfter::FixedUpdateElapsed(duration) => (
+                &mut cx.scheduled_fixed_update_tasks,
+                Delay::Elapsed(duration),
+            ),
+            RunAfter::UpdateElapsedSecs(secs) => (
+                &mut cx.scheduled_update_tasks,
+                Delay::Elapsed(Duration::from_secs_f64(secs)),
+            ),
+            RunAfter::FixedUpdateElapsedSecs(secs) => (
+                &mut cx.scheduled_fixed_update_tasks,
+                Delay::Elapsed(Duration::from_secs_f64(secs)),
+            ),
+        };
+
+        queue.push_back(ScheduledWorldTask {
+            delay,
+            task: scheduled_task.task,
+        });
     }
 }
 
