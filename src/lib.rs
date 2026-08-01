@@ -2,7 +2,7 @@ use bevy_app::{App, FixedUpdate, Last, Plugin, Update};
 use bevy_ecs::{
     change_detection::{Res, ResMut},
     resource::Resource,
-    schedule::IntoScheduleConfigs,
+    schedule::{IntoScheduleConfigs, SystemSet},
     system::{Commands, Local},
     world::World,
 };
@@ -24,8 +24,8 @@ pub mod message;
 
 pub mod prelude {
     pub use crate::{
-        AsyncContext, AsyncTaskContext, AsyncTaskPlugin, RunAfter, SpawnTaskDeferredExt,
-        SpawnTaskExt,
+        AsyncContext, AsyncTaskContext, AsyncTaskPlugin, AsyncTaskSystems, RunAfter,
+        SpawnTaskDeferredExt, SpawnTaskExt,
         event::{EntityEventFutureExt, EventStreamTaskExt},
         message::MessageStreamTaskExt,
     };
@@ -37,19 +37,26 @@ pub mod prelude {
 
 pub struct AsyncTaskPlugin;
 
+#[derive(SystemSet, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AsyncTaskSystems;
+
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AsyncContext>()
-            .add_systems(FixedUpdate, fixed_update_and_queue_scheduled_world_tasks)
+            .add_systems(
+                FixedUpdate,
+                fixed_update_and_queue_scheduled_world_tasks.in_set(AsyncTaskSystems),
+            )
             .add_systems(
                 Update,
                 (
                     update_and_queue_scheduled_world_tasks,
                     run_async_world_tasks,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(AsyncTaskSystems),
             )
-            .add_systems(Last, receive_scheduled_world_tasks);
+            .add_systems(Last, receive_scheduled_world_tasks.in_set(AsyncTaskSystems));
     }
 }
 
