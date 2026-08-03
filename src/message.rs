@@ -3,7 +3,6 @@ use bevy_ecs::{
     message::{Message, MessageCursor, Messages},
     world::World,
 };
-use bevy_log::error;
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
     pin::Pin,
@@ -61,7 +60,8 @@ where
             Ok(v) => Poll::Ready(Some(v)),
             Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                error!("Failed to receive message. Did you remove `AsyncContext` resource?");
+                // Sender was dropped, most likely during app shutdown.
+                // Ignore the disconnect and keep the stream pending.
                 Poll::Pending
             }
         }

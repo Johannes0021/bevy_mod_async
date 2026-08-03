@@ -6,7 +6,7 @@ use bevy_ecs::{
     system::{Commands, Local},
     world::World,
 };
-use bevy_log::error;
+use bevy_log::{error, info};
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use bevy_time::Time;
 use futures::task::AtomicWaker;
@@ -296,6 +296,12 @@ pub struct AsyncContext {
     scheduled_fixed_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
 }
 
+impl Drop for AsyncContext {
+    fn drop(&mut self) {
+        info!("AsyncContext dropped. Existing async operations may leak resources.");
+    }
+}
+
 impl AsyncContext {
     fn new() -> Self {
         let (world_task_tx, world_task_rx) = crossbeam_channel::unbounded();
@@ -387,7 +393,8 @@ impl<R> Future for WithWorldFuture<R> {
             Ok(v) => Poll::Ready(v),
             Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                error!("Failed to receive result. Did you remove `AsyncContext` resource?");
+                // Sender was dropped, most likely during app shutdown.
+                // Ignore the disconnect and keep the future pending.
                 Poll::Pending
             }
         }
@@ -406,17 +413,15 @@ where
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
 
         let waker_rx = waker_tx.clone();
+        // If this fails the receiver was dropped, most likely during app shutdown.
+        // Ignore the disconnect and return a future that never resolves.
         send_with_error_api_guard(
             world_task_tx,
             Box::new(move |world| {
                 send_with_error_api_guard(&result_tx, f(world), None);
                 waker_rx.wake();
             }),
-            Some(
-                "Failed to send task to `run_async_world_tasks`. \
-                Did you remove `AsyncContext` resource?"
-                    .to_string(),
-            ),
+            None,
         );
 
         Self {
@@ -437,6 +442,8 @@ where
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
 
         let waker_rx = waker_tx.clone();
+        // If this fails the receiver was dropped, most likely during app shutdown.
+        // Ignore the disconnect and return a future that never resolves.
         send_with_error_api_guard(
             world_task_tx,
             ScheduledWorldTask {
@@ -446,11 +453,7 @@ where
                     waker_rx.wake();
                 }),
             },
-            Some(
-                "Failed to send task to `receive_scheduled_world_tasks`. \
-                Did you remove `AsyncContext` resource?"
-                    .to_string(),
-            ),
+            None,
         );
 
         Self {

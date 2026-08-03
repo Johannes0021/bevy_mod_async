@@ -8,7 +8,6 @@ use bevy_ecs::{
     observer::{Observer, On},
     world::World,
 };
-use bevy_log::error;
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
     fmt,
@@ -187,7 +186,8 @@ impl<E, B> Stream for EventStream<E, B> {
             }
 
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                error!("Failed to receive event. Did you remove `AsyncContext` resource?");
+                // Sender was dropped, most likely during app shutdown.
+                // Ignore the disconnect and keep the stream pending.
 
                 let this = self.get_mut();
                 this.ensure_observer_is_scheduled_to_despawn();
