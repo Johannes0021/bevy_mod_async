@@ -1,5 +1,13 @@
 use crate::{AsyncContext, AsyncTaskContext, send_with_error_api_guard};
-use bevy_ecs::prelude::*;
+use bevy_ecs::{
+    bundle::Bundle,
+    component::Component,
+    entity::Entity,
+    event::{EntityEvent, Event},
+    lifecycle::Remove,
+    observer::{Observer, On},
+    world::World,
+};
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
     fmt,
