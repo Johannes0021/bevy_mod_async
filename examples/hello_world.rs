@@ -161,6 +161,7 @@ fn setup(mut commands: Commands) {
                     // The stream starts at creation time and misses earlier events.
                     let full_rot_fut = cx
                         .with_world(move |w| entity.observe_future::<FullRotation>(w))
+                        //.with_world(move |w| [entity, ...].observe_future::<FullRotation>(w))
                         .await;
                     let e = full_rot_fut.await.unwrap();
                     info!("{} did a full rotation (EntityEvent)", e.0);
@@ -176,6 +177,7 @@ fn setup(mut commands: Commands) {
                 // The stream starts at creation time and misses earlier events.
                 let mut events = cx
                     .with_world(move |w| entity.event_stream::<FullRotation>(w))
+                    //.with_world(move |w| [entity, ...].event_stream::<FullRotation>(w))
                     .await;
                 while events.next_event().await.is_ok() {
                     let next_color = if toggle { color_a } else { color_b };

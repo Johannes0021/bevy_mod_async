@@ -55,7 +55,9 @@ impl<T> EventStreamTaskExt for T where T: Event + Clone {}
 // EntityEventFutureExt
 //==================================================================================================
 
-pub trait EntityEventFutureExt: Into<Entity> + Clone {
+pub trait EntityEventFutureExt: Sized {
+    fn into_event_future_target_entities(self) -> impl IntoIterator<Item = Entity>;
+
     fn observe_future<E>(self, world: &mut World) -> BoxFuture<'static, Result<E, EventFutureError>>
     where
         E: EntityEvent + Clone,
@@ -80,7 +82,7 @@ pub trait EntityEventFutureExt: Into<Entity> + Clone {
     where
         E: EntityEvent + Clone,
     {
-        EventStream::new(world, [self.into()])
+        EventStream::new(world, self.into_event_future_target_entities())
     }
 
     fn event_stream_with_bundle<E, B>(self, world: &mut World) -> EventStream<E, B>
@@ -88,11 +90,33 @@ pub trait EntityEventFutureExt: Into<Entity> + Clone {
         E: EntityEvent + Clone,
         B: Bundle,
     {
-        EventStream::new(world, [self.into()])
+        EventStream::new(world, self.into_event_future_target_entities())
     }
 }
 
-impl EntityEventFutureExt for Entity {}
+impl EntityEventFutureExt for Entity {
+    fn into_event_future_target_entities(self) -> impl IntoIterator<Item = Entity> {
+        [self]
+    }
+}
+
+impl<T, const N: usize> EntityEventFutureExt for [T; N]
+where
+    T: Into<Entity>,
+{
+    fn into_event_future_target_entities(self) -> impl IntoIterator<Item = Entity> {
+        self.into_iter().map(Into::into)
+    }
+}
+
+impl<T> EntityEventFutureExt for &[T]
+where
+    T: Into<Entity> + Clone,
+{
+    fn into_event_future_target_entities(self) -> impl IntoIterator<Item = Entity> {
+        self.iter().cloned().map(Into::into)
+    }
+}
 
 //==================================================================================================
 // EventFutureError
