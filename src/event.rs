@@ -10,7 +10,6 @@ use bevy_ecs::{
 };
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
-    fmt,
     marker::PhantomData,
     pin::Pin,
     sync::Arc,
@@ -22,14 +21,12 @@ use std::{
 //==================================================================================================
 
 pub trait EventStreamTaskExt: Event + Clone {
-    fn to_future(world: &mut World) -> BoxFuture<'static, Result<Self, EventFutureError>> {
+    fn to_future(world: &mut World) -> BoxFuture<'static, Self> {
         let mut stream = Self::event_stream(world);
         async move { stream.next_event().await }.boxed()
     }
 
-    fn to_future_with_bundle<B>(
-        world: &mut World,
-    ) -> BoxFuture<'static, Result<Self, EventFutureError>>
+    fn to_future_with_bundle<B>(world: &mut World) -> BoxFuture<'static, Self>
     where
         B: Bundle,
     {
@@ -58,7 +55,7 @@ impl<T> EventStreamTaskExt for T where T: Event + Clone {}
 pub trait EntityEventFutureExt: Sized {
     fn into_event_future_target_entities(self) -> impl IntoIterator<Item = Entity>;
 
-    fn observe_future<E>(self, world: &mut World) -> BoxFuture<'static, Result<E, EventFutureError>>
+    fn observe_future<E>(self, world: &mut World) -> BoxFuture<'static, E>
     where
         E: EntityEvent + Clone,
     {
@@ -66,10 +63,7 @@ pub trait EntityEventFutureExt: Sized {
         async move { stream.next_event().await }.boxed()
     }
 
-    fn observe_future_with_bundle<E, B>(
-        self,
-        world: &mut World,
-    ) -> BoxFuture<'static, Result<E, EventFutureError>>
+    fn observe_future_with_bundle<E, B>(self, world: &mut World) -> BoxFuture<'static, E>
     where
         E: EntityEvent + Clone,
         B: Bundle,
@@ -122,44 +116,8 @@ where
 // EventFutureError
 //==================================================================================================
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum EventFutureError {
-    /// The expected event could not complete because the tracking mechanism was removed before
-    /// completion.
-    ///
-    /// If the observing entity has been despawned before the expected event was received,
-    /// the future cannot complete successfully.
-    /// This indicates a logic error or race condition in the event flow.
-    TrackingMarkerRemoved { entity: Entity },
-}
-
-impl fmt::Debug for EventFutureError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TrackingMarkerRemoved { entity } => f
-                .debug_struct("EventFutureError::MarkerRemoved")
-                .field("entity", entity)
-                .field(
-                    "reason",
-                    &"tracking marker was removed before event completion",
-                )
-                .finish(),
-        }
-    }
-}
-
-impl fmt::Display for EventFutureError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TrackingMarkerRemoved { entity } => {
-                write!(
-                    f,
-                    "entity event failed: tracking marker was removed before completion ({})",
-                    entity
-                )
-            }
-        }
-    }
+enum EventFutureError {
+    TrackingMarkerRemoved,
 }
 
 //==================================================================================================
@@ -183,33 +141,18 @@ impl<E, B> Drop for EventStream<E, B> {
 }
 
 impl<E, B> Stream for EventStream<E, B> {
-    type Item = Result<E, EventFutureError>;
+    type Item = E;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.waker_tx.register(cx.waker());
 
         match self.event_rx.try_recv() {
-            Ok(Ok(v)) => Poll::Ready(Some(Ok(v))),
+            Ok(Ok(v)) => Poll::Ready(Some(v)),
 
-            Ok(Err(EventFutureError::TrackingMarkerRemoved { entity })) => {
-                let this = self.get_mut();
-                this.ensure_observer_is_scheduled_to_despawn();
-                Poll::Ready(Some(Err(EventFutureError::TrackingMarkerRemoved {
-                    entity,
-                })))
-            }
+            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
 
-            Err(crossbeam_channel::TryRecvError::Empty) => {
-                if self.observer_despawned {
-                    Poll::Ready(Some(Err(EventFutureError::TrackingMarkerRemoved {
-                        entity: self.observer,
-                    })))
-                } else {
-                    Poll::Pending
-                }
-            }
-
-            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            Ok(Err(EventFutureError::TrackingMarkerRemoved))
+            | Err(crossbeam_channel::TryRecvError::Disconnected) => {
                 // Sender was dropped, most likely during app shutdown.
                 // Ignore the disconnect and keep the stream pending.
 
@@ -223,14 +166,12 @@ impl<E, B> Stream for EventStream<E, B> {
 }
 
 impl<E, B> EventStream<E, B> {
-    pub async fn next_event(&mut self) -> Result<E, EventFutureError> {
+    pub async fn next_event(&mut self) -> E {
         match self.next().await {
             Some(v) => v,
             // This should be unreachable in this design,
             // but must be handled because Stream requires Option.
-            None => Err(EventFutureError::TrackingMarkerRemoved {
-                entity: self.observer,
-            }),
+            None => unreachable!(),
         }
     }
 
@@ -278,12 +219,10 @@ where
         );
 
         let waker_rx = waker_tx.clone();
-        observer.observe(move |event: On<Remove, EventFutureDespawnMarker>| {
+        observer.observe(move |_: On<Remove, EventFutureDespawnMarker>| {
             send_with_error_api_guard(
                 &event_tx,
-                Err(EventFutureError::TrackingMarkerRemoved {
-                    entity: event.event().entity,
-                }),
+                Err(EventFutureError::TrackingMarkerRemoved),
                 None,
             );
             waker_rx.wake();
