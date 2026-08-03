@@ -486,7 +486,7 @@ pub(crate) fn send_with_error_api_guard<T>(
         let _: &T = &t;
 
         if let Some(error_message) = error_message {
-            error!(error_message);
+            error!("{error_message}");
         }
     }
 }
