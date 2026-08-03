@@ -3,6 +3,7 @@ use bevy_ecs::{
     message::{Message, MessageCursor, Messages},
     world::World,
 };
+use bevy_log::error;
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
     pin::Pin,
@@ -60,7 +61,8 @@ where
             Ok(v) => Poll::Ready(Some(v)),
             Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                panic!("Failed to receive message. Did you remove `AsyncContext` resource?",)
+                error!("Failed to receive message. Did you remove `AsyncContext` resource?");
+                Poll::Pending
             }
         }
     }
@@ -86,7 +88,7 @@ where
             }
 
             for message in reader.read(world.resource::<Messages<MInner>>()) {
-                send_with_error_api_guard(&message_tx, message.clone())
+                send_with_error_api_guard(&message_tx, message.clone(), None);
             }
 
             waker_rx.wake();

@@ -8,6 +8,7 @@ use bevy_ecs::{
     observer::{Observer, On},
     world::World,
 };
+use bevy_log::error;
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
     fmt,
@@ -186,11 +187,12 @@ impl<E, B> Stream for EventStream<E, B> {
             }
 
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                error!("Failed to receive event. Did you remove `AsyncContext` resource?");
+
                 let this = self.get_mut();
                 this.ensure_observer_is_scheduled_to_despawn();
-                Poll::Ready(Some(Err(EventFutureError::TrackingMarkerRemoved {
-                    entity: this.observer,
-                })))
+
+                Poll::Pending
             }
         }
     }
@@ -245,7 +247,7 @@ where
         let event_tx_clone = event_tx.clone();
         let mut observer = world.spawn(
             Observer::new(move |event: On<E, B>| {
-                send_with_error_api_guard(&event_tx_clone, Ok(event.event().clone()));
+                send_with_error_api_guard(&event_tx_clone, Ok(event.event().clone()), None);
                 waker_rx.wake();
             })
             .with_entities(entities),
@@ -258,6 +260,7 @@ where
                 Err(EventFutureError::TrackingMarkerRemoved {
                     entity: event.event().entity,
                 }),
+                None,
             );
             waker_rx.wake();
         });

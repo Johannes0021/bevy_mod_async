@@ -6,6 +6,7 @@ use bevy_ecs::{
     system::{Commands, Local},
     world::World,
 };
+use bevy_log::error;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use bevy_time::Time;
 use futures::task::AtomicWaker;
@@ -42,7 +43,7 @@ pub struct AsyncTaskSystems;
 
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<AsyncContext>()
+        app.insert_resource(AsyncContext::new())
             .add_systems(
                 FixedUpdate,
                 fixed_update_and_queue_scheduled_world_tasks.in_set(AsyncTaskSystems),
@@ -135,9 +136,14 @@ fn update_and_queue_scheduled_world_tasks_helper(
 
         if ready_to_queue {
             let scheduled_task = scheduled_tasks.remove(i).unwrap();
-            world_task_tx.send(scheduled_task.task).expect(
-                "Failed to send task to `run_async_world_tasks`. \
-                    Did you remove `AsyncContext` resource?",
+            send_with_error_api_guard(
+                world_task_tx,
+                scheduled_task.task,
+                Some(
+                    "Failed to send task to `run_async_world_tasks`. \
+                        Did you remove `AsyncContext` resource?"
+                        .to_string(),
+                ),
             );
         } else {
             i += 1;
@@ -290,8 +296,8 @@ pub struct AsyncContext {
     scheduled_fixed_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
 }
 
-impl Default for AsyncContext {
-    fn default() -> Self {
+impl AsyncContext {
+    fn new() -> Self {
         let (world_task_tx, world_task_rx) = crossbeam_channel::unbounded();
         let (scheduled_world_task_tx, scheduled_world_task_rx) = crossbeam_channel::unbounded();
 
@@ -304,9 +310,7 @@ impl Default for AsyncContext {
             scheduled_fixed_update_tasks: Default::default(),
         }
     }
-}
 
-impl AsyncContext {
     pub fn create_task_context(&self) -> AsyncTaskContext {
         AsyncTaskContext {
             world_task_tx: self.world_task_tx.clone(),
@@ -383,7 +387,8 @@ impl<R> Future for WithWorldFuture<R> {
             Ok(v) => Poll::Ready(v),
             Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                panic!("Failed to receive result. Did you remove `AsyncContext` resource?",)
+                error!("Failed to receive result. Did you remove `AsyncContext` resource?");
+                Poll::Pending
             }
         }
     }
@@ -401,17 +406,18 @@ where
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
 
         let waker_rx = waker_tx.clone();
-        world_task_tx
-            .send(Box::new(move |world| {
-                // If this `send` fails, most likely the user forgot to `await` this future,
-                // and they should have a warning anyway, so we're going to completely ignore this.
-                send_with_error_api_guard(&result_tx, f(world));
+        send_with_error_api_guard(
+            world_task_tx,
+            Box::new(move |world| {
+                send_with_error_api_guard(&result_tx, f(world), None);
                 waker_rx.wake();
-            }))
-            .expect(
+            }),
+            Some(
                 "Failed to send task to `run_async_world_tasks`. \
-                Did you remove `AsyncContext` resource?",
-            );
+                Did you remove `AsyncContext` resource?"
+                    .to_string(),
+            ),
+        );
 
         Self {
             waker_tx,
@@ -431,20 +437,21 @@ where
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
 
         let waker_rx = waker_tx.clone();
-        world_task_tx
-            .send(ScheduledWorldTask {
+        send_with_error_api_guard(
+            world_task_tx,
+            ScheduledWorldTask {
                 delay,
                 task: Box::new(move |world| {
-                    // If this `send` fails, most likely the user forgot to `await` this future, and
-                    // they should have a warning anyway, so we're going to completely ignore this.
-                    send_with_error_api_guard(&result_tx, f(world));
+                    send_with_error_api_guard(&result_tx, f(world), None);
                     waker_rx.wake();
                 }),
-            })
-            .expect(
+            },
+            Some(
                 "Failed to send task to `receive_scheduled_world_tasks`. \
-                Did you remove `AsyncContext` resource?",
-            );
+                Did you remove `AsyncContext` resource?"
+                    .to_string(),
+            ),
+        );
 
         Self {
             waker_tx,
@@ -468,10 +475,18 @@ where
 /// future error conditions.
 ///
 /// More robust than `let _ = tx.send(...)`.
-pub(crate) fn send_with_error_api_guard<T>(tx: &crossbeam_channel::Sender<T>, value: T) {
+pub(crate) fn send_with_error_api_guard<T>(
+    tx: &crossbeam_channel::Sender<T>,
+    value: T,
+    error_message: Option<String>,
+) {
     let result = tx.send(value);
 
     if let Err(crossbeam_channel::SendError(t)) = result {
-        let _ = &t;
+        let _: &T = &t;
+
+        if let Some(error_message) = error_message {
+            error!(error_message);
+        }
     }
 }
