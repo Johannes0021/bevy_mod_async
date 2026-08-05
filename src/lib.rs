@@ -167,11 +167,11 @@ fn receive_scheduled_world_tasks(mut cx: ResMut<AsyncContext>) {
             ),
             RunAfter::UpdateElapsedSecs(secs) => (
                 &mut cx.scheduled_update_tasks,
-                Delay::Elapsed(Duration::from_secs_f64(secs)),
+                Delay::Elapsed(checked_duration_from_secs_f64(secs)),
             ),
             RunAfter::FixedUpdateElapsedSecs(secs) => (
                 &mut cx.scheduled_fixed_update_tasks,
-                Delay::Elapsed(Duration::from_secs_f64(secs)),
+                Delay::Elapsed(checked_duration_from_secs_f64(secs)),
             ),
         };
 
@@ -492,4 +492,9 @@ pub(crate) fn send_with_error_api_guard<T>(
             error!("{error_message}");
         }
     }
+}
+
+fn checked_duration_from_secs_f64(secs: f64) -> Duration {
+    debug_assert!(secs >= 0.0, "Duration must be non-negative");
+    Duration::from_secs_f64(secs.max(0.0))
 }
