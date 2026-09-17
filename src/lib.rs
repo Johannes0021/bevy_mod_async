@@ -1,8 +1,8 @@
-use bevy_app::{App, FixedUpdate, Last, Plugin, Update};
+use bevy_app::{App, FixedMainScheduleOrder, FixedUpdate, Last, MainScheduleOrder, Plugin, Update};
 use bevy_ecs::{
     change_detection::{Res, ResMut},
     resource::Resource,
-    schedule::{IntoScheduleConfigs, SystemSet},
+    schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, SystemSet},
     system::{Commands, Local},
     world::World,
 };
@@ -41,15 +41,30 @@ pub struct AsyncTaskPlugin;
 #[derive(SystemSet, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AsyncTaskSystems;
 
+#[derive(ScheduleLabel, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AsyncTaskBeforeFixedUpdate;
+
+#[derive(ScheduleLabel, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AsyncTaskBeforeUpdate;
+
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
+        app.add_schedule(Schedule::new(AsyncTaskBeforeFixedUpdate));
+        let mut fixed_main_schedule_order =
+            app.world_mut().resource_mut::<FixedMainScheduleOrder>();
+        fixed_main_schedule_order.insert_before(FixedUpdate, AsyncTaskBeforeFixedUpdate);
+
+        app.add_schedule(Schedule::new(AsyncTaskBeforeUpdate));
+        let mut main_schedule_order = app.world_mut().resource_mut::<MainScheduleOrder>();
+        main_schedule_order.insert_before(Update, AsyncTaskBeforeUpdate);
+
         app.insert_resource(AsyncContext::new())
             .add_systems(
-                FixedUpdate,
+                AsyncTaskBeforeFixedUpdate,
                 fixed_update_and_queue_scheduled_world_tasks.in_set(AsyncTaskSystems),
             )
             .add_systems(
-                Update,
+                AsyncTaskBeforeUpdate,
                 (
                     update_and_queue_scheduled_world_tasks,
                     run_async_world_tasks,
