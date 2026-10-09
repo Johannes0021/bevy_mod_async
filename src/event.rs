@@ -102,9 +102,9 @@ enum EventFutureError {
 
 #[must_use]
 pub struct EventStream<E: EventPattern> {
+    cx: AsyncTaskContext,
     waker_tx: Arc<AtomicWaker>,
     event_rx: Box<crossbeam_channel::Receiver<Result<E::Event, EventFutureError>>>,
-    cx: AsyncTaskContext,
     observer: Entity,
     observer_despawned: bool,
 }
@@ -206,9 +206,9 @@ where
         observer.insert(EventFutureDespawnMarker);
 
         Self {
+            cx,
             waker_tx,
             event_rx: Box::new(event_rx),
-            cx,
             observer: observer.id(),
             observer_despawned: false,
         }

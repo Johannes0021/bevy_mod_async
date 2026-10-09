@@ -212,6 +212,10 @@ struct ScheduledWorldTask<T> {
     task: WorldTask,
 }
 
+//==================================================================================================
+// RunAfter
+//==================================================================================================
+
 pub enum RunAfter {
     UpdateTicks(usize),
     FixedUpdateTicks(usize),
@@ -220,6 +224,10 @@ pub enum RunAfter {
     UpdateElapsedSecs(f64),
     FixedUpdateElapsedSecs(f64),
 }
+
+//==================================================================================================
+// Delay
+//==================================================================================================
 
 enum Delay {
     Ticks(usize),
@@ -303,12 +311,12 @@ impl SpawnTaskDeferredExt for Commands<'_, '_> {
 
 #[derive(Resource)]
 pub struct AsyncContext {
+    scheduled_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
+    scheduled_fixed_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
     world_task_tx: crossbeam_channel::Sender<WorldTask>,
     world_task_rx: crossbeam_channel::Receiver<WorldTask>,
     scheduled_world_task_tx: crossbeam_channel::Sender<ScheduledWorldTask<RunAfter>>,
     scheduled_world_task_rx: crossbeam_channel::Receiver<ScheduledWorldTask<RunAfter>>,
-    scheduled_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
-    scheduled_fixed_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
 }
 
 impl Drop for AsyncContext {
@@ -323,12 +331,12 @@ impl AsyncContext {
         let (scheduled_world_task_tx, scheduled_world_task_rx) = crossbeam_channel::unbounded();
 
         Self {
+            scheduled_update_tasks: VecDeque::default(),
+            scheduled_fixed_update_tasks: VecDeque::default(),
             world_task_tx,
             world_task_rx,
             scheduled_world_task_tx,
             scheduled_world_task_rx,
-            scheduled_update_tasks: Default::default(),
-            scheduled_fixed_update_tasks: Default::default(),
         }
     }
 
@@ -394,8 +402,8 @@ impl AsyncTaskContext {
 
 #[must_use = "future must be awaited to yield execution or detached"]
 pub struct WithWorldFuture<R> {
-    waker_tx: Arc<AtomicWaker>,
     result_rx: crossbeam_channel::Receiver<R>,
+    waker_tx: Arc<AtomicWaker>,
 }
 
 impl<R> Future for WithWorldFuture<R> {
@@ -440,8 +448,8 @@ where
         );
 
         Self {
-            waker_tx,
             result_rx,
+            waker_tx,
         }
     }
 
@@ -472,8 +480,8 @@ where
         );
 
         Self {
-            waker_tx,
             result_rx,
+            waker_tx,
         }
     }
 
