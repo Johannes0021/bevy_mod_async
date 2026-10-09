@@ -2,7 +2,7 @@ use crate::{AsyncContext, AsyncTaskContext, send_with_error_api_guard};
 use bevy_ecs::{
     component::Component,
     entity::Entity,
-    event::{EntityEvent, Event, EventPattern},
+    event::{EntityEvent, EventPattern},
     lifecycle::Remove,
     observer::{Observer, On},
     world::World,
@@ -32,7 +32,12 @@ where
     }
 }
 
-impl<T> EventStreamTaskExt for T where T: Event + Clone {}
+impl<T> EventStreamTaskExt for T
+where
+    T: EventPattern,
+    T::Event: Clone,
+{
+}
 
 //==================================================================================================
 // EntityEventFutureExt
