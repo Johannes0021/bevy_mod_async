@@ -1,16 +1,14 @@
 use crate::{AsyncContext, AsyncTaskContext, send_with_error_api_guard};
 use bevy_ecs::{
-    bundle::Bundle,
     component::Component,
     entity::Entity,
-    event::{EntityEvent, Event},
+    event::{EntityEvent, Event, EventPattern},
     lifecycle::Remove,
     observer::{Observer, On},
     world::World,
 };
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
 use std::{
-    marker::PhantomData,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -20,28 +18,16 @@ use std::{
 // EventStreamTaskExt
 //==================================================================================================
 
-pub trait EventStreamTaskExt: Event + Clone {
-    fn to_future(world: &mut World) -> BoxFuture<'static, Self> {
+pub trait EventStreamTaskExt: Sized + EventPattern
+where
+    Self::Event: Clone,
+{
+    fn to_future(world: &mut World) -> BoxFuture<'static, Self::Event> {
         let mut stream = Self::event_stream(world);
         async move { stream.next_event().await }.boxed()
     }
 
-    fn to_future_with_bundle<B>(world: &mut World) -> BoxFuture<'static, Self>
-    where
-        B: Bundle,
-    {
-        let mut stream = Self::event_stream_with_bundle::<B>(world);
-        async move { stream.next_event().await }.boxed()
-    }
-
     fn event_stream(world: &mut World) -> EventStream<Self> {
-        EventStream::new(world, [])
-    }
-
-    fn event_stream_with_bundle<B>(world: &mut World) -> EventStream<Self, B>
-    where
-        B: Bundle,
-    {
         EventStream::new(world, [])
     }
 }
@@ -55,34 +41,19 @@ impl<T> EventStreamTaskExt for T where T: Event + Clone {}
 pub trait EntityEventFutureExt: Sized {
     fn into_event_future_target_entities(self) -> impl IntoIterator<Item = Entity>;
 
-    fn observe_future<E>(self, world: &mut World) -> BoxFuture<'static, E>
+    fn observe_future<E>(self, world: &mut World) -> BoxFuture<'static, E::Event>
     where
-        E: EntityEvent + Clone,
+        E: EventPattern,
+        E::Event: EntityEvent + Clone,
     {
-        let mut stream = self.event_stream(world);
-        async move { stream.next_event().await }.boxed()
-    }
-
-    fn observe_future_with_bundle<E, B>(self, world: &mut World) -> BoxFuture<'static, E>
-    where
-        E: EntityEvent + Clone,
-        B: Bundle,
-    {
-        let mut stream = self.event_stream_with_bundle::<E, B>(world);
+        let mut stream = self.event_stream::<E>(world);
         async move { stream.next_event().await }.boxed()
     }
 
     fn event_stream<E>(self, world: &mut World) -> EventStream<E>
     where
-        E: EntityEvent + Clone,
-    {
-        EventStream::new(world, self.into_event_future_target_entities())
-    }
-
-    fn event_stream_with_bundle<E, B>(self, world: &mut World) -> EventStream<E, B>
-    where
-        E: EntityEvent + Clone,
-        B: Bundle,
+        E: EventPattern,
+        E::Event: EntityEvent + Clone,
     {
         EventStream::new(world, self.into_event_future_target_entities())
     }
@@ -125,23 +96,22 @@ enum EventFutureError {
 //==================================================================================================
 
 #[must_use]
-pub struct EventStream<E, B = ()> {
+pub struct EventStream<E: EventPattern> {
     waker_tx: Arc<AtomicWaker>,
-    event_rx: Box<crossbeam_channel::Receiver<Result<E, EventFutureError>>>,
+    event_rx: Box<crossbeam_channel::Receiver<Result<E::Event, EventFutureError>>>,
     cx: AsyncTaskContext,
     observer: Entity,
     observer_despawned: bool,
-    _bundle: PhantomData<fn() -> B>,
 }
 
-impl<E, B> Drop for EventStream<E, B> {
+impl<E: EventPattern> Drop for EventStream<E> {
     fn drop(&mut self) {
         self.ensure_observer_is_scheduled_to_despawn();
     }
 }
 
-impl<E, B> Stream for EventStream<E, B> {
-    type Item = E;
+impl<E: EventPattern> Stream for EventStream<E> {
+    type Item = E::Event;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.waker_tx.register(cx.waker());
@@ -165,8 +135,8 @@ impl<E, B> Stream for EventStream<E, B> {
     }
 }
 
-impl<E, B> EventStream<E, B> {
-    pub async fn next_event(&mut self) -> E {
+impl<E: EventPattern> EventStream<E> {
+    pub async fn next_event(&mut self) -> E::Event {
         match self.next().await {
             Some(v) => v,
             // This should be unreachable in this design,
@@ -192,10 +162,10 @@ impl<E, B> EventStream<E, B> {
     }
 }
 
-impl<E, B> EventStream<E, B>
+impl<E> EventStream<E>
 where
-    E: Event + Clone,
-    B: Bundle,
+    E: EventPattern,
+    E::Event: Clone,
 {
     pub fn new<I>(world: &mut World, entities: I) -> Self
     where
@@ -211,7 +181,7 @@ where
         let waker_rx = waker_tx.clone();
         let event_tx_clone = event_tx.clone();
         let mut observer = world.spawn(
-            Observer::new(move |event: On<E, B>| {
+            Observer::new(move |event: On<E>| {
                 send_with_error_api_guard(&event_tx_clone, Ok(event.event().clone()), None);
                 waker_rx.wake();
             })
@@ -219,7 +189,7 @@ where
         );
 
         let waker_rx = waker_tx.clone();
-        observer.observe(move |_: On<Remove, EventFutureDespawnMarker>| {
+        observer.observe(move |_: On<Remove<EventFutureDespawnMarker>>| {
             send_with_error_api_guard(
                 &event_tx,
                 Err(EventFutureError::TrackingMarkerRemoved),
@@ -236,7 +206,6 @@ where
             cx,
             observer: observer.id(),
             observer_despawned: false,
-            _bundle: PhantomData,
         }
     }
 }
