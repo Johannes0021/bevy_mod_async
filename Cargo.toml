@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crossbeam-channel = "0.5.17"
-bevy_app = "0.20.0"
-bevy_ecs = "0.20.0"
-bevy_log = "0.20.0"
-bevy_tasks = "0.20.0"
-bevy_time = "0.20.0"
-futures = "0.3.34"
+crossbeam-channel = { version = "0.5.17", default-features = false, features = ["std"] }
+bevy_app = { version = "0.20.0", default-features = false }
+bevy_ecs = { version = "0.20.0", default-features = false }
+bevy_log = { version = "0.20.0", default-features = false }
+bevy_tasks = { version = "0.20.0", default-features = false }
+bevy_time = { version = "0.20.0", default-features = false }
+futures = { version = "0.3.34", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-bevy = "0.20.0"
+bevy = { version = "0.20.0", default-features = false, features = ["2d"] }
 
 [[example]]
 name = "hello_world"
