@@ -1,19 +1,14 @@
-use bevy_app::{App, FixedMainScheduleOrder, FixedUpdate, Last, MainScheduleOrder, Plugin, Update};
+use bevy_app::{FixedMainScheduleOrder, MainScheduleOrder, prelude::*};
 use bevy_ecs::{
-    change_detection::{Res, ResMut},
-    resource::Resource,
-    schedule::{IntoScheduleConfigs, ScheduleLabel, SystemSet},
-    system::{Commands, Local},
-    world::World,
+    prelude::*,
+    schedule::{ScheduleLabel, SystemSet},
 };
-use bevy_log::{error, info};
-use bevy_tasks::{AsyncComputeTaskPool, Task};
-use bevy_time::Time;
+use bevy_log::prelude::*;
+use bevy_tasks::{Task, prelude::*};
+use bevy_time::prelude::*;
 use futures::task::AtomicWaker;
 use std::{
     collections::VecDeque,
-    future::Future,
-    marker::Send,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
