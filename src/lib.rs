@@ -2,7 +2,7 @@ use bevy_app::{App, FixedMainScheduleOrder, FixedUpdate, Last, MainScheduleOrder
 use bevy_ecs::{
     change_detection::{Res, ResMut},
     resource::Resource,
-    schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, SystemSet},
+    schedule::{IntoScheduleConfigs, ScheduleLabel, SystemSet},
     system::{Commands, Local},
     world::World,
 };
@@ -49,12 +49,12 @@ pub struct AsyncTaskBeforeUpdate;
 
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
-        app.add_schedule(Schedule::new(AsyncTaskBeforeFixedUpdate));
+        app.init_schedule(AsyncTaskBeforeFixedUpdate);
         let mut fixed_main_schedule_order =
             app.world_mut().resource_mut::<FixedMainScheduleOrder>();
         fixed_main_schedule_order.insert_before(FixedUpdate, AsyncTaskBeforeFixedUpdate);
 
-        app.add_schedule(Schedule::new(AsyncTaskBeforeUpdate));
+        app.init_schedule(AsyncTaskBeforeUpdate);
         let mut main_schedule_order = app.world_mut().resource_mut::<MainScheduleOrder>();
         main_schedule_order.insert_before(Update, AsyncTaskBeforeUpdate);
 
