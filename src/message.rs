@@ -1,4 +1,4 @@
-use super::{mpsc_unbounded_send_with_error_api_guard, prelude::*};
+use super::prelude::*;
 use bevy_ecs::{message::MessageCursor, prelude::*};
 use futures::{channel::mpsc, future::BoxFuture, prelude::*};
 use std::{
@@ -80,7 +80,7 @@ where
             }
 
             for message in reader.read(world.resource::<Messages<MInner>>()) {
-                mpsc_unbounded_send_with_error_api_guard(&message_tx, message.clone(), None);
+                let _ = message_tx.unbounded_send(message.clone());
             }
 
             let cx_clone = cx.clone();

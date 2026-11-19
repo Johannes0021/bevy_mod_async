@@ -1,4 +1,4 @@
-use super::{mpsc_unbounded_send_with_error_api_guard, prelude::*};
+use super::prelude::*;
 use bevy_ecs::prelude::*;
 use futures::{channel::mpsc, future::BoxFuture, prelude::*};
 use std::{
@@ -172,21 +172,13 @@ where
         let event_tx_clone = event_tx.clone();
         let mut observer = world.spawn(
             Observer::new(move |event: On<E>| {
-                mpsc_unbounded_send_with_error_api_guard(
-                    &event_tx_clone,
-                    Ok(event.event().clone()),
-                    None,
-                );
+                let _ = event_tx_clone.unbounded_send(Ok(event.event().clone()));
             })
             .with_entities(entities),
         );
 
         observer.observe(move |_: On<Remove<EventFutureDespawnMarker>>| {
-            mpsc_unbounded_send_with_error_api_guard(
-                &event_tx,
-                Err(EventFutureError::TrackingMarkerRemoved),
-                None,
-            );
+            let _ = event_tx.unbounded_send(Err(EventFutureError::TrackingMarkerRemoved));
         });
 
         observer.insert(EventFutureDespawnMarker);

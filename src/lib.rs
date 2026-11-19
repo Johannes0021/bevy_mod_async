@@ -32,14 +32,14 @@ pub mod prelude {
 
 pub struct AsyncTaskPlugin;
 
-#[derive(SystemSet, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AsyncTaskSystems;
-
 #[derive(ScheduleLabel, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AsyncTaskBeforeFixedUpdate;
 
 #[derive(ScheduleLabel, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AsyncTaskBeforeUpdate;
+
+#[derive(SystemSet, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AsyncTaskSystems;
 
 impl Plugin for AsyncTaskPlugin {
     fn build(&self, app: &mut App) {
@@ -145,15 +145,12 @@ fn update_and_queue_scheduled_world_tasks_helper(
 
         if ready_to_queue {
             let scheduled_task = scheduled_tasks.remove(i).unwrap();
-            mpsc_unbounded_send_with_error_api_guard(
-                world_task_tx,
-                scheduled_task.task,
-                Some(
+            if world_task_tx.unbounded_send(scheduled_task.task).is_err() {
+                error!(
                     "Failed to send task to `run_async_world_tasks`. \
-                        Did you remove `AsyncContext` resource?"
-                        .to_string(),
-                ),
-            );
+                     Did you remove `AsyncContext` resource?"
+                );
+            }
         } else {
             i += 1;
         }
@@ -232,20 +229,16 @@ where
 
         // If this fails the receiver was dropped, most likely during app shutdown.
         // Ignore the disconnect and return a future that never resolves.
-        mpsc_unbounded_send_with_error_api_guard(
-            world_task_tx,
-            Box::new(move |world| {
-                oneshot_channel_send_with_error_api_guard(result_tx, f(world), None)
-            }),
-            None,
-        );
+        let _ = world_task_tx.unbounded_send(Box::new(move |world| {
+            let _ = result_tx.send(f(world));
+        }));
 
         Self(result_rx)
     }
 
     fn new_scheduled<F>(
         delay: RunAfter,
-        world_task_tx: &mpsc::UnboundedSender<ScheduledWorldTask<RunAfter>>,
+        scheduled_world_task_tx: &mpsc::UnboundedSender<ScheduledWorldTask<RunAfter>>,
         f: F,
     ) -> Self
     where
@@ -255,16 +248,12 @@ where
 
         // If this fails the receiver was dropped, most likely during app shutdown.
         // Ignore the disconnect and return a future that never resolves.
-        mpsc_unbounded_send_with_error_api_guard(
-            world_task_tx,
-            ScheduledWorldTask {
-                delay,
-                task: Box::new(move |world| {
-                    oneshot_channel_send_with_error_api_guard(result_tx, f(world), None)
-                }),
-            },
-            None,
-        );
+        let _ = scheduled_world_task_tx.unbounded_send(ScheduledWorldTask {
+            delay,
+            task: Box::new(move |world| {
+                let _ = result_tx.send(f(world));
+            }),
+        });
 
         Self(result_rx)
     }
@@ -468,44 +457,6 @@ impl AsyncTaskContext {
 //==================================================================================================
 // helper functions
 //==================================================================================================
-
-/// Compile-time guard for the `oneshot::Sender<T>::send` result.
-/// More robust than `let _ = tx.send(...)`.
-pub(crate) fn oneshot_channel_send_with_error_api_guard<T>(
-    tx: oneshot::Sender<T>,
-    value: T,
-    error_message: Option<String>,
-) {
-    match tx.send(value) {
-        Ok(()) => (),
-        Err(t) => {
-            let _: &T = &t;
-
-            if let Some(error_message) = error_message {
-                error!("{error_message}");
-            }
-        }
-    }
-}
-
-/// Compile-time guard for the `oneshot::Sender<T>::send` result.
-/// More robust than `let _ = tx.send(...)`.
-pub(crate) fn mpsc_unbounded_send_with_error_api_guard<T>(
-    tx: &mpsc::UnboundedSender<T>,
-    value: T,
-    error_message: Option<String>,
-) {
-    match tx.unbounded_send(value) {
-        Ok(()) => (),
-        Err(t) => {
-            let _: T = t.into_inner();
-
-            if let Some(error_message) = error_message {
-                error!("{error_message}");
-            }
-        }
-    }
-}
 
 fn checked_duration_from_secs_f64(secs: f64) -> Duration {
     debug_assert!(secs >= 0.0, "Duration must be non-negative");
