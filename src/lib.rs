@@ -201,7 +201,7 @@ type WorldTask = Box<dyn FnOnce(&mut World) + Send + Sync>;
 // WorldTaskResultReceiver
 //==================================================================================================
 
-#[must_use = "future must be awaited to yield execution or detached"]
+#[must_use]
 pub struct WorldTaskResultReceiver<R>(oneshot::Receiver<R>);
 
 impl<R> Future for WorldTaskResultReceiver<R> {
