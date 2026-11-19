@@ -34,7 +34,7 @@ impl<T> MessageStreamTaskExt for T where T: Message + Clone {}
 #[must_use]
 pub struct MessageStream<M> {
     quit_tx: Arc<AtomicBool>,
-    message_rx: Box<mpsc::UnboundedReceiver<M>>,
+    message_rx: mpsc::UnboundedReceiver<M>,
 }
 
 impl<M> Drop for MessageStream<M> {
@@ -106,7 +106,7 @@ where
 
         Self {
             quit_tx,
-            message_rx: Box::new(message_rx),
+            message_rx,
         }
     }
 }
