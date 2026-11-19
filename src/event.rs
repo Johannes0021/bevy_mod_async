@@ -1,9 +1,8 @@
-use super::{prelude::*, send_with_error_api_guard};
+use super::{mpsc_unbounded_send_with_error_api_guard, prelude::*};
 use bevy_ecs::prelude::*;
-use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
+use futures::{channel::mpsc, future::BoxFuture, prelude::*};
 use std::{
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -96,8 +95,7 @@ enum EventFutureError {
 #[must_use]
 pub struct EventStream<E: EventPattern> {
     cx: AsyncTaskContext,
-    waker_tx: Arc<AtomicWaker>,
-    event_rx: Box<crossbeam_channel::Receiver<Result<E::Event, EventFutureError>>>,
+    event_rx: mpsc::UnboundedReceiver<Result<E::Event, EventFutureError>>,
     observer: Entity,
     observer_despawned: bool,
 }
@@ -112,23 +110,19 @@ impl<E: EventPattern> Stream for EventStream<E> {
     type Item = E::Event;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.waker_tx.register(cx.waker());
+        let this = self.get_mut();
+        let pinned_event_rx = Pin::new(&mut this.event_rx);
+        match pinned_event_rx.poll_next(cx) {
+            Poll::Ready(Some(Ok(result))) => Poll::Ready(Some(result)),
 
-        match self.event_rx.try_recv() {
-            Ok(Ok(v)) => Poll::Ready(Some(v)),
-
-            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
-
-            Ok(Err(EventFutureError::TrackingMarkerRemoved))
-            | Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            Poll::Ready(Some(Err(EventFutureError::TrackingMarkerRemoved))) | Poll::Ready(None) => {
                 // Sender was dropped, most likely during app shutdown.
                 // Ignore the disconnect and keep the stream pending.
-
-                let this = self.get_mut();
                 this.ensure_observer_is_scheduled_to_despawn();
-
                 Poll::Pending
             }
+
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -172,36 +166,34 @@ where
         #[derive(Component)]
         struct EventFutureDespawnMarker;
 
-        let waker_tx = Arc::new(AtomicWaker::new());
-        let (event_tx, event_rx) = crossbeam_channel::unbounded();
+        let (event_tx, event_rx) = mpsc::unbounded();
         let cx = world.resource::<AsyncContext>().create_task_context();
 
-        let waker_rx = waker_tx.clone();
         let event_tx_clone = event_tx.clone();
         let mut observer = world.spawn(
             Observer::new(move |event: On<E>| {
-                send_with_error_api_guard(&event_tx_clone, Ok(event.event().clone()), None);
-                waker_rx.wake();
+                mpsc_unbounded_send_with_error_api_guard(
+                    &event_tx_clone,
+                    Ok(event.event().clone()),
+                    None,
+                );
             })
             .with_entities(entities),
         );
 
-        let waker_rx = waker_tx.clone();
         observer.observe(move |_: On<Remove<EventFutureDespawnMarker>>| {
-            send_with_error_api_guard(
+            mpsc_unbounded_send_with_error_api_guard(
                 &event_tx,
                 Err(EventFutureError::TrackingMarkerRemoved),
                 None,
             );
-            waker_rx.wake();
         });
 
         observer.insert(EventFutureDespawnMarker);
 
         Self {
             cx,
-            waker_tx,
-            event_rx: Box::new(event_rx),
+            event_rx,
             observer: observer.id(),
             observer_despawned: false,
         }

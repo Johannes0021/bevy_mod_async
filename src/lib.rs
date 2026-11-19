@@ -6,11 +6,10 @@ use bevy_ecs::{
 use bevy_log::prelude::*;
 use bevy_tasks::{Task, prelude::*};
 use bevy_time::prelude::*;
-use futures::task::AtomicWaker;
+use futures::channel::{mpsc, oneshot};
 use std::{
     collections::VecDeque,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -73,7 +72,7 @@ impl Plugin for AsyncTaskPlugin {
 
 pub fn run_async_world_tasks(world: &mut World, mut world_tasks: Local<Vec<WorldTask>>) {
     loop {
-        let cx = world.resource_mut::<AsyncContext>();
+        let mut cx = world.resource_mut::<AsyncContext>();
         while let Ok(task) = cx.world_task_rx.try_recv() {
             world_tasks.push(task);
         }
@@ -126,7 +125,7 @@ fn fixed_update_and_queue_scheduled_world_tasks(mut cx: ResMut<AsyncContext>, ti
 
 fn update_and_queue_scheduled_world_tasks_helper(
     scheduled_tasks: &mut VecDeque<ScheduledWorldTask<Delay>>,
-    world_task_tx: &crossbeam_channel::Sender<WorldTask>,
+    world_task_tx: &mpsc::UnboundedSender<WorldTask>,
     dt: Duration,
 ) {
     let mut i = 0;
@@ -146,7 +145,7 @@ fn update_and_queue_scheduled_world_tasks_helper(
 
         if ready_to_queue {
             let scheduled_task = scheduled_tasks.remove(i).unwrap();
-            send_with_error_api_guard(
+            mpsc_unbounded_send_with_error_api_guard(
                 world_task_tx,
                 scheduled_task.task,
                 Some(
@@ -197,6 +196,81 @@ fn receive_scheduled_world_tasks(mut cx: ResMut<AsyncContext>) {
 //==================================================================================================
 
 type WorldTask = Box<dyn FnOnce(&mut World) + Send + Sync>;
+
+//==================================================================================================
+// WorldTaskResultReceiver
+//==================================================================================================
+
+#[must_use = "future must be awaited to yield execution or detached"]
+pub struct WorldTaskResultReceiver<R>(oneshot::Receiver<R>);
+
+impl<R> Future for WorldTaskResultReceiver<R> {
+    type Output = R;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let pinned_result_rx = Pin::new(&mut this.0);
+        match pinned_result_rx.poll(cx) {
+            Poll::Ready(Ok(result)) => Poll::Ready(result),
+            // Sender was dropped, most likely during app shutdown.
+            // Ignore the disconnect and keep the future pending.
+            Poll::Ready(Err(_)) => Poll::Pending,
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<R> WorldTaskResultReceiver<R>
+where
+    R: Send + 'static,
+{
+    fn new<F>(world_task_tx: &mpsc::UnboundedSender<WorldTask>, f: F) -> Self
+    where
+        F: FnOnce(&mut World) -> R + Send + Sync + 'static,
+    {
+        let (result_tx, result_rx) = oneshot::channel();
+
+        // If this fails the receiver was dropped, most likely during app shutdown.
+        // Ignore the disconnect and return a future that never resolves.
+        mpsc_unbounded_send_with_error_api_guard(
+            world_task_tx,
+            Box::new(move |world| {
+                oneshot_channel_send_with_error_api_guard(result_tx, f(world), None)
+            }),
+            None,
+        );
+
+        Self(result_rx)
+    }
+
+    fn new_scheduled<F>(
+        delay: RunAfter,
+        world_task_tx: &mpsc::UnboundedSender<ScheduledWorldTask<RunAfter>>,
+        f: F,
+    ) -> Self
+    where
+        F: FnOnce(&mut World) -> R + Send + Sync + 'static,
+    {
+        let (result_tx, result_rx) = oneshot::channel();
+
+        // If this fails the receiver was dropped, most likely during app shutdown.
+        // Ignore the disconnect and return a future that never resolves.
+        mpsc_unbounded_send_with_error_api_guard(
+            world_task_tx,
+            ScheduledWorldTask {
+                delay,
+                task: Box::new(move |world| {
+                    oneshot_channel_send_with_error_api_guard(result_tx, f(world), None)
+                }),
+            },
+            None,
+        );
+
+        Self(result_rx)
+    }
+
+    pub fn detach(self) {}
+}
 
 //==================================================================================================
 // ScheduledWorldTask
@@ -308,10 +382,10 @@ impl SpawnTaskDeferredExt for Commands<'_, '_> {
 pub struct AsyncContext {
     scheduled_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
     scheduled_fixed_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
-    world_task_tx: crossbeam_channel::Sender<WorldTask>,
-    world_task_rx: crossbeam_channel::Receiver<WorldTask>,
-    scheduled_world_task_tx: crossbeam_channel::Sender<ScheduledWorldTask<RunAfter>>,
-    scheduled_world_task_rx: crossbeam_channel::Receiver<ScheduledWorldTask<RunAfter>>,
+    world_task_tx: mpsc::UnboundedSender<WorldTask>,
+    world_task_rx: mpsc::UnboundedReceiver<WorldTask>,
+    scheduled_world_task_tx: mpsc::UnboundedSender<ScheduledWorldTask<RunAfter>>,
+    scheduled_world_task_rx: mpsc::UnboundedReceiver<ScheduledWorldTask<RunAfter>>,
 }
 
 impl Drop for AsyncContext {
@@ -322,8 +396,8 @@ impl Drop for AsyncContext {
 
 impl AsyncContext {
     fn new() -> Self {
-        let (world_task_tx, world_task_rx) = crossbeam_channel::unbounded();
-        let (scheduled_world_task_tx, scheduled_world_task_rx) = crossbeam_channel::unbounded();
+        let (world_task_tx, world_task_rx) = mpsc::unbounded();
+        let (scheduled_world_task_tx, scheduled_world_task_rx) = mpsc::unbounded();
 
         Self {
             scheduled_update_tasks: VecDeque::default(),
@@ -349,20 +423,20 @@ impl AsyncContext {
 
 #[derive(Clone)]
 pub struct AsyncTaskContext {
-    world_task_tx: crossbeam_channel::Sender<WorldTask>,
-    scheduled_world_task_tx: crossbeam_channel::Sender<ScheduledWorldTask<RunAfter>>,
+    world_task_tx: mpsc::UnboundedSender<WorldTask>,
+    scheduled_world_task_tx: mpsc::UnboundedSender<ScheduledWorldTask<RunAfter>>,
 }
 
 impl AsyncTaskContext {
-    pub fn with_world<F, R>(&self, f: F) -> WithWorldFuture<R>
+    pub fn with_world<F, R>(&self, f: F) -> WorldTaskResultReceiver<R>
     where
         F: FnOnce(&mut World) -> R + Send + Sync + 'static,
         R: Send + 'static,
     {
-        WithWorldFuture::new(&self.world_task_tx, f)
+        WorldTaskResultReceiver::new(&self.world_task_tx, f)
     }
 
-    pub fn with_world_scheduled<F, R>(&self, delay: RunAfter, f: F) -> WithWorldFuture<R>
+    pub fn with_world_scheduled<F, R>(&self, delay: RunAfter, f: F) -> WorldTaskResultReceiver<R>
     where
         F: FnOnce(&mut World) -> R + Send + Sync + 'static,
         R: Send + 'static,
@@ -382,132 +456,53 @@ impl AsyncTaskContext {
         if ready_to_queue {
             self.with_world(f)
         } else {
-            WithWorldFuture::new_scheduled(delay, &self.scheduled_world_task_tx, f)
+            WorldTaskResultReceiver::new_scheduled(delay, &self.scheduled_world_task_tx, f)
         }
     }
 
-    pub fn delay(&self, delay: RunAfter) -> WithWorldFuture<()> {
+    pub fn delay(&self, delay: RunAfter) -> WorldTaskResultReceiver<()> {
         self.with_world_scheduled(delay, |_| {})
     }
-}
-
-//==================================================================================================
-// WithWorldFuture
-//==================================================================================================
-
-#[must_use = "future must be awaited to yield execution or detached"]
-pub struct WithWorldFuture<R> {
-    result_rx: crossbeam_channel::Receiver<R>,
-    waker_tx: Arc<AtomicWaker>,
-}
-
-impl<R> Future for WithWorldFuture<R> {
-    type Output = R;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.waker_tx.register(cx.waker());
-
-        match self.result_rx.try_recv() {
-            Ok(v) => Poll::Ready(v),
-            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
-            Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                // Sender was dropped, most likely during app shutdown.
-                // Ignore the disconnect and keep the future pending.
-                Poll::Pending
-            }
-        }
-    }
-}
-
-impl<R> WithWorldFuture<R>
-where
-    R: Send + 'static,
-{
-    fn new<F>(world_task_tx: &crossbeam_channel::Sender<WorldTask>, f: F) -> Self
-    where
-        F: FnOnce(&mut World) -> R + Send + Sync + 'static,
-    {
-        let waker_tx = Arc::new(AtomicWaker::new());
-        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
-
-        let waker_rx = waker_tx.clone();
-        // If this fails the receiver was dropped, most likely during app shutdown.
-        // Ignore the disconnect and return a future that never resolves.
-        send_with_error_api_guard(
-            world_task_tx,
-            Box::new(move |world| {
-                send_with_error_api_guard(&result_tx, f(world), None);
-                waker_rx.wake();
-            }),
-            None,
-        );
-
-        Self {
-            result_rx,
-            waker_tx,
-        }
-    }
-
-    fn new_scheduled<F>(
-        delay: RunAfter,
-        world_task_tx: &crossbeam_channel::Sender<ScheduledWorldTask<RunAfter>>,
-        f: F,
-    ) -> Self
-    where
-        F: FnOnce(&mut World) -> R + Send + Sync + 'static,
-    {
-        let waker_tx = Arc::new(AtomicWaker::new());
-        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
-
-        let waker_rx = waker_tx.clone();
-        // If this fails the receiver was dropped, most likely during app shutdown.
-        // Ignore the disconnect and return a future that never resolves.
-        send_with_error_api_guard(
-            world_task_tx,
-            ScheduledWorldTask {
-                delay,
-                task: Box::new(move |world| {
-                    send_with_error_api_guard(&result_tx, f(world), None);
-                    waker_rx.wake();
-                }),
-            },
-            None,
-        );
-
-        Self {
-            result_rx,
-            waker_tx,
-        }
-    }
-
-    pub fn detach(self) {}
 }
 
 //==================================================================================================
 // helper functions
 //==================================================================================================
 
-/// Compile-time structural guard for `crossbeam_channel::SendError<T>`.
-///
-/// This function forces the compiler to depend on the concrete structure of `SendError<T>` so that
-/// any breaking change in the dependency will surface as a compilation error.
-///
-/// It is not a runtime error-handling mechanism and does not guarantee exhaustive handling of all
-/// future error conditions.
-///
+/// Compile-time guard for the `oneshot::Sender<T>::send` result.
 /// More robust than `let _ = tx.send(...)`.
-pub(crate) fn send_with_error_api_guard<T>(
-    tx: &crossbeam_channel::Sender<T>,
+pub(crate) fn oneshot_channel_send_with_error_api_guard<T>(
+    tx: oneshot::Sender<T>,
     value: T,
     error_message: Option<String>,
 ) {
-    let result = tx.send(value);
+    match tx.send(value) {
+        Ok(()) => (),
+        Err(t) => {
+            let _: &T = &t;
 
-    if let Err(crossbeam_channel::SendError(t)) = result {
-        let _: &T = &t;
+            if let Some(error_message) = error_message {
+                error!("{error_message}");
+            }
+        }
+    }
+}
 
-        if let Some(error_message) = error_message {
-            error!("{error_message}");
+/// Compile-time guard for the `oneshot::Sender<T>::send` result.
+/// More robust than `let _ = tx.send(...)`.
+pub(crate) fn mpsc_unbounded_send_with_error_api_guard<T>(
+    tx: &mpsc::UnboundedSender<T>,
+    value: T,
+    error_message: Option<String>,
+) {
+    match tx.unbounded_send(value) {
+        Ok(()) => (),
+        Err(t) => {
+            let _: T = t.into_inner();
+
+            if let Some(error_message) = error_message {
+                error!("{error_message}");
+            }
         }
     }
 }

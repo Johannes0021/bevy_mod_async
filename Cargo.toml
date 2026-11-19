@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crossbeam-channel = { version = "0.5.17", default-features = false, features = ["std"] }
 bevy_app = { version = "0.20.0", default-features = false }
 bevy_ecs = { version = "0.20.0", default-features = false }
 bevy_log = { version = "0.20.0", default-features = false }

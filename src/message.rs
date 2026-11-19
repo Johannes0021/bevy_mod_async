@@ -1,6 +1,6 @@
-use super::{prelude::*, send_with_error_api_guard};
+use super::{mpsc_unbounded_send_with_error_api_guard, prelude::*};
 use bevy_ecs::{message::MessageCursor, prelude::*};
-use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, task::AtomicWaker};
+use futures::{channel::mpsc, future::BoxFuture, prelude::*};
 use std::{
     pin::Pin,
     sync::{
@@ -34,8 +34,7 @@ impl<T> MessageStreamTaskExt for T where T: Message + Clone {}
 #[must_use]
 pub struct MessageStream<M> {
     quit_tx: Arc<AtomicBool>,
-    waker_tx: Arc<AtomicWaker>,
-    message_rx: Box<crossbeam_channel::Receiver<M>>,
+    message_rx: Box<mpsc::UnboundedReceiver<M>>,
 }
 
 impl<M> Drop for MessageStream<M> {
@@ -51,16 +50,13 @@ where
     type Item = M;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.waker_tx.register(cx.waker());
-
-        match self.message_rx.try_recv() {
-            Ok(v) => Poll::Ready(Some(v)),
-            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
-            Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                // Sender was dropped, most likely during app shutdown.
-                // Ignore the disconnect and keep the stream pending.
-                Poll::Pending
-            }
+        let this = self.get_mut();
+        let pinned_message_rx = Pin::new(&mut this.message_rx);
+        match pinned_message_rx.poll_next(cx) {
+            Poll::Ready(Some(result)) => Poll::Ready(Some(result)),
+            // Sender was dropped, most likely during app shutdown.
+            // Ignore the disconnect and keep the stream pending.
+            Poll::Ready(None) | Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -73,8 +69,7 @@ where
         fn read_and_reschedule<MInner>(
             world: &mut World,
             quit_rx: Arc<AtomicBool>,
-            waker_rx: Arc<AtomicWaker>,
-            message_tx: crossbeam_channel::Sender<MInner>,
+            message_tx: mpsc::UnboundedSender<MInner>,
             mut reader: MessageCursor<MInner>,
             cx: AsyncTaskContext,
         ) where
@@ -85,14 +80,12 @@ where
             }
 
             for message in reader.read(world.resource::<Messages<MInner>>()) {
-                send_with_error_api_guard(&message_tx, message.clone(), None);
+                mpsc_unbounded_send_with_error_api_guard(&message_tx, message.clone(), None);
             }
-
-            waker_rx.wake();
 
             let cx_clone = cx.clone();
             cx.with_world_scheduled(RunAfter::UpdateTicks(1), move |world| {
-                read_and_reschedule(world, quit_rx, waker_rx, message_tx, reader, cx_clone);
+                read_and_reschedule(world, quit_rx, message_tx, reader, cx_clone);
             })
             .detach();
         }
@@ -100,23 +93,19 @@ where
         let quit_tx = Arc::new(AtomicBool::new(false));
         let quit_rx = quit_tx.clone();
 
-        let waker_tx = Arc::new(AtomicWaker::new());
-        let waker_rx = waker_tx.clone();
-
-        let (message_tx, message_rx) = crossbeam_channel::unbounded();
+        let (message_tx, message_rx) = mpsc::unbounded();
 
         let reader = MessageCursor::default();
 
         let cx = world.resource::<AsyncContext>().create_task_context();
         let cx_clone = cx.clone();
         cx.with_world(move |world| {
-            read_and_reschedule::<M>(world, quit_rx, waker_rx, message_tx, reader, cx_clone);
+            read_and_reschedule::<M>(world, quit_rx, message_tx, reader, cx_clone);
         })
         .detach();
 
         Self {
             quit_tx,
-            waker_tx,
             message_rx: Box::new(message_rx),
         }
     }
