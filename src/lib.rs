@@ -6,9 +6,13 @@ use bevy_ecs::{
 use bevy_log::prelude::*;
 use bevy_tasks::{Task, prelude::*};
 use bevy_time::prelude::*;
-use futures::channel::{mpsc, oneshot};
+use futures::{
+    channel::{mpsc, oneshot},
+    future::BoxFuture,
+    prelude::*,
+};
 use std::{
-    collections::VecDeque,
+    mem,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -19,8 +23,9 @@ pub mod message;
 
 pub mod prelude {
     pub use crate::{
-        AsyncContext, AsyncTaskContext, AsyncTaskPlugin, AsyncTaskSystems, RunAfter,
-        SpawnTaskDeferredExt, SpawnTaskExt,
+        AsyncContext, AsyncTaskBeforeFixedUpdate, AsyncTaskBeforeUpdate, AsyncTaskContext,
+        AsyncTaskPlugin, AsyncTaskSystems, SpawnAsyncTaskDeferredExt, SpawnAsyncTaskExt, WorldTask,
+        WorldTaskDelay, WorldTaskLoop, WorldTaskSchedule,
         event::{EntityEventFutureExt, EventStreamTaskExt},
         message::MessageStreamTaskExt,
     };
@@ -55,158 +60,63 @@ impl Plugin for AsyncTaskPlugin {
         app.insert_resource(AsyncContext::new())
             .add_systems(
                 AsyncTaskBeforeFixedUpdate,
-                fixed_update_and_queue_scheduled_world_tasks.in_set(AsyncTaskSystems),
+                fixed_update_world_tasks.in_set(AsyncTaskSystems),
             )
+            .add_systems(FixedLast, receive_world_tasks.in_set(AsyncTaskSystems))
             .add_systems(
                 AsyncTaskBeforeUpdate,
-                (
-                    update_and_queue_scheduled_world_tasks,
-                    run_async_world_tasks,
-                )
-                    .chain()
-                    .in_set(AsyncTaskSystems),
+                update_world_tasks.in_set(AsyncTaskSystems),
             )
-            .add_systems(Last, receive_scheduled_world_tasks.in_set(AsyncTaskSystems));
+            .add_systems(Last, receive_world_tasks.in_set(AsyncTaskSystems));
     }
 }
 
-pub fn run_async_world_tasks(world: &mut World, mut world_tasks: Local<Vec<WorldTask>>) {
-    loop {
-        let mut cx = world.resource_mut::<AsyncContext>();
-        while let Ok(task) = cx.world_task_rx.try_recv() {
-            world_tasks.push(task);
-        }
+fn fixed_update_world_tasks(world: &mut World) {
+    let fixed_time = world.resource::<Time<Fixed>>();
+    let delta = fixed_time.delta();
 
-        if world_tasks.is_empty() {
-            break;
-        }
+    let mut cx = world.resource_mut::<AsyncContext>();
+    cx.fixed_update_delayed_world_tasks(delta);
 
-        for task in world_tasks.drain(..) {
-            task(world);
-        }
-    }
+    while AsyncContext::run_fixed_update_world_tasks(world) {}
 }
 
-fn update_and_queue_scheduled_world_tasks(mut cx: ResMut<AsyncContext>, time: Res<Time>) {
-    if cx.scheduled_update_tasks.is_empty() {
-        return;
-    }
+fn update_world_tasks(world: &mut World) {
+    let time = world.resource::<Time>();
+    let delta = time.delta();
 
-    let AsyncContext {
-        world_task_tx,
-        scheduled_update_tasks,
-        ..
-    } = &mut *cx;
+    let mut cx = world.resource_mut::<AsyncContext>();
+    cx.update_delayed_world_tasks(delta);
 
-    update_and_queue_scheduled_world_tasks_helper(
-        scheduled_update_tasks,
-        world_task_tx,
-        time.delta(),
-    );
+    while AsyncContext::run_update_world_tasks(world) {}
 }
 
-fn fixed_update_and_queue_scheduled_world_tasks(mut cx: ResMut<AsyncContext>, time: Res<Time>) {
-    if cx.scheduled_fixed_update_tasks.is_empty() {
-        return;
-    }
-
-    let AsyncContext {
-        world_task_tx,
-        scheduled_fixed_update_tasks,
-        ..
-    } = &mut *cx;
-
-    update_and_queue_scheduled_world_tasks_helper(
-        scheduled_fixed_update_tasks,
-        world_task_tx,
-        time.delta(),
-    );
-}
-
-fn update_and_queue_scheduled_world_tasks_helper(
-    scheduled_tasks: &mut VecDeque<ScheduledWorldTask<Delay>>,
-    world_task_tx: &mpsc::UnboundedSender<WorldTask>,
-    dt: Duration,
-) {
-    let mut i = 0;
-    while i < scheduled_tasks.len() {
-        let scheduled_task = &mut scheduled_tasks[i];
-
-        let ready_to_queue = match &mut scheduled_task.delay {
-            Delay::Ticks(ticks) => {
-                *ticks = ticks.saturating_sub(1);
-                *ticks == 0
-            }
-            Delay::Elapsed(duration) => {
-                *duration = duration.saturating_sub(dt);
-                duration.is_zero()
-            }
-        };
-
-        if ready_to_queue {
-            let scheduled_task = scheduled_tasks.remove(i).unwrap();
-            if world_task_tx.unbounded_send(scheduled_task.task).is_err() {
-                error!(
-                    "Failed to send task to `run_async_world_tasks`. \
-                     Did you remove `AsyncContext` resource?"
-                );
-            }
-        } else {
-            i += 1;
-        }
-    }
-}
-
-fn receive_scheduled_world_tasks(mut cx: ResMut<AsyncContext>) {
-    while let Ok(scheduled_task) = cx.scheduled_world_task_rx.try_recv() {
-        let (queue, delay) = match scheduled_task.delay {
-            RunAfter::UpdateTicks(ticks) => (&mut cx.scheduled_update_tasks, Delay::Ticks(ticks)),
-            RunAfter::FixedUpdateTicks(ticks) => {
-                (&mut cx.scheduled_fixed_update_tasks, Delay::Ticks(ticks))
-            }
-            RunAfter::UpdateElapsed(duration) => {
-                (&mut cx.scheduled_update_tasks, Delay::Elapsed(duration))
-            }
-            RunAfter::FixedUpdateElapsed(duration) => (
-                &mut cx.scheduled_fixed_update_tasks,
-                Delay::Elapsed(duration),
-            ),
-            RunAfter::UpdateElapsedSecs(secs) => (
-                &mut cx.scheduled_update_tasks,
-                Delay::Elapsed(checked_duration_from_secs_f64(secs)),
-            ),
-            RunAfter::FixedUpdateElapsedSecs(secs) => (
-                &mut cx.scheduled_fixed_update_tasks,
-                Delay::Elapsed(checked_duration_from_secs_f64(secs)),
-            ),
-        };
-
-        queue.push_back(ScheduledWorldTask {
-            delay,
-            task: scheduled_task.task,
-        });
-    }
+fn receive_world_tasks(mut cx: ResMut<AsyncContext>) {
+    cx.receive_world_tasks();
 }
 
 //==================================================================================================
 // WorldTask
 //==================================================================================================
 
-type WorldTask = Box<dyn FnOnce(&mut World) + Send + Sync>;
+#[must_use = "futures do nothing unless you `.await`, `.detach()` or poll them"]
+pub struct WorldTask<R = ()> {
+    data: Option<WorldTaskData>,
+    cx: AsyncTaskContext,
+    result_rx: oneshot::Receiver<R>,
+}
 
-//==================================================================================================
-// WorldTaskResultReceiver
-//==================================================================================================
-
-#[must_use]
-pub struct WorldTaskResultReceiver<R>(oneshot::Receiver<R>);
-
-impl<R> Future for WorldTaskResultReceiver<R> {
+impl<R> Future for WorldTask<R> {
     type Output = R;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let pinned_result_rx = Pin::new(&mut this.0);
+
+        if let Some(data) = this.data.take() {
+            this.cx.send(data);
+        }
+
+        let pinned_result_rx = Pin::new(&mut this.result_rx);
         match pinned_result_rx.poll(cx) {
             Poll::Ready(Ok(result)) => Poll::Ready(result),
             // Sender was dropped, most likely during app shutdown.
@@ -217,151 +127,162 @@ impl<R> Future for WorldTaskResultReceiver<R> {
     }
 }
 
-impl<R> WorldTaskResultReceiver<R>
+impl<R> WorldTask<R>
 where
     R: Send + 'static,
 {
-    fn new<F>(world_task_tx: &mpsc::UnboundedSender<WorldTask>, f: F) -> Self
+    pub fn once<F>(cx: AsyncTaskContext, f: F) -> Self
     where
         F: FnOnce(&mut World) -> R + Send + Sync + 'static,
     {
         let (result_tx, result_rx) = oneshot::channel();
 
-        // If this fails the receiver was dropped, most likely during app shutdown.
-        // Ignore the disconnect and return a future that never resolves.
-        let _ = world_task_tx.unbounded_send(Box::new(move |world| {
-            let _ = result_tx.send(f(world));
-        }));
-
-        Self(result_rx)
-    }
-
-    fn new_scheduled<F>(
-        delay: RunAfter,
-        scheduled_world_task_tx: &mpsc::UnboundedSender<ScheduledWorldTask<RunAfter>>,
-        f: F,
-    ) -> Self
-    where
-        F: FnOnce(&mut World) -> R + Send + Sync + 'static,
-    {
-        let (result_tx, result_rx) = oneshot::channel();
-
-        // If this fails the receiver was dropped, most likely during app shutdown.
-        // Ignore the disconnect and return a future that never resolves.
-        let _ = scheduled_world_task_tx.unbounded_send(ScheduledWorldTask {
-            delay,
-            task: Box::new(move |world| {
-                let _ = result_tx.send(f(world));
+        Self {
+            data: Some(WorldTaskData {
+                task: WorldTaskFn::Once(Box::new(|world| {
+                    let _ = result_tx.send(f(world));
+                })),
+                delay: WorldTaskDelay::default(),
+                schedule: WorldTaskSchedule::default(),
             }),
-        });
-
-        Self(result_rx)
+            cx,
+            result_rx,
+        }
     }
 
-    pub fn detach(self) {}
+    pub fn looped<F>(cx: AsyncTaskContext, mut f: F) -> Self
+    where
+        F: FnMut(&mut World) -> WorldTaskLoop<R> + Send + Sync + 'static,
+    {
+        let (result_tx, result_rx) = oneshot::channel();
+        let mut result_tx = Some(result_tx);
+
+        Self {
+            data: Some(WorldTaskData {
+                task: WorldTaskFn::Loop(Box::new(move |world| match f(world) {
+                    WorldTaskLoop::Continue(delay) => Some(delay),
+                    WorldTaskLoop::Return(result) => {
+                        if let Some(result_tx) = result_tx.take() {
+                            let _ = result_tx.send(result);
+                        }
+                        None
+                    }
+                })),
+                delay: WorldTaskDelay::default(),
+                schedule: WorldTaskSchedule::default(),
+            }),
+            cx,
+            result_rx,
+        }
+    }
+
+    pub fn delay(mut self, delay: WorldTaskDelay) -> Self {
+        let data = self.data.as_mut().unwrap();
+        data.delay = delay;
+        self
+    }
+
+    pub fn schedule(mut self, schedule: WorldTaskSchedule) -> Self {
+        let data = self.data.as_mut().unwrap();
+        data.schedule = schedule;
+        self
+    }
+
+    pub fn spawn(self) -> BoxFuture<'static, R> {
+        self.cx.send(self.data.expect("task data missing"));
+        async {
+            match self.result_rx.await {
+                Ok(result) => result,
+                // Sender was dropped, most likely during app shutdown.
+                // Ignore the disconnect and keep the future pending.
+                Err(_) => std::future::pending::<R>().await,
+            }
+        }
+        .boxed()
+    }
+
+    pub fn detach(self) {
+        self.cx.send(self.data.expect("task data missing"));
+    }
 }
 
 //==================================================================================================
-// ScheduledWorldTask
+// WorldTaskData
 //==================================================================================================
 
-struct ScheduledWorldTask<T> {
-    delay: T,
-    task: WorldTask,
+struct WorldTaskData {
+    task: WorldTaskFn,
+    delay: WorldTaskDelay,
+    schedule: WorldTaskSchedule,
 }
 
 //==================================================================================================
-// RunAfter
+// WorldTaskFn
 //==================================================================================================
 
-pub enum RunAfter {
-    UpdateTicks(usize),
-    FixedUpdateTicks(usize),
-    UpdateElapsed(Duration),
-    FixedUpdateElapsed(Duration),
-    UpdateElapsedSecs(f64),
-    FixedUpdateElapsedSecs(f64),
+#[allow(clippy::type_complexity)]
+enum WorldTaskFn {
+    Once(Box<dyn FnOnce(&mut World) + Send + Sync>),
+    Loop(Box<dyn FnMut(&mut World) -> Option<WorldTaskDelay> + Send + Sync>),
 }
 
 //==================================================================================================
-// Delay
+// WorldTaskDelay
 //==================================================================================================
 
-enum Delay {
+#[derive(Default, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum WorldTaskDelay {
+    #[default]
+    None,
     Ticks(usize),
     Elapsed(Duration),
 }
 
-//==================================================================================================
-// SpawnTaskExt
-//==================================================================================================
-
-pub trait SpawnTaskExt {
-    fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
-    where
-        T: FnOnce(AsyncTaskContext) -> F,
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static;
-}
-
-impl SpawnTaskExt for World {
-    fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
-    where
-        T: FnOnce(AsyncTaskContext) -> F,
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static,
-    {
-        let cx = self.resource::<AsyncContext>().create_task_context();
-        AsyncComputeTaskPool::get().spawn(task(cx))
+impl WorldTaskDelay {
+    pub fn secs(secs: f64) -> Self {
+        Self::Elapsed(checked_duration_from_secs_f64(secs))
     }
-}
 
-impl SpawnTaskExt for AsyncContext {
-    fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
-    where
-        T: FnOnce(AsyncTaskContext) -> F,
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static,
-    {
-        let cx = self.create_task_context();
-        AsyncComputeTaskPool::get().spawn(task(cx))
-    }
-}
-
-impl SpawnTaskExt for AsyncTaskContext {
-    fn spawn_task<T, F, R>(&self, task: T) -> Task<R>
-    where
-        T: FnOnce(AsyncTaskContext) -> F,
-        F: Future<Output = R> + Send + 'static,
-        R: Send + 'static,
-    {
-        let this = self.clone();
-        AsyncComputeTaskPool::get().spawn(task(this))
+    pub fn is_zero(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::Ticks(ticks) => *ticks == 0,
+            Self::Elapsed(elapsed) => elapsed.is_zero(),
+        }
     }
 }
 
 //==================================================================================================
-// SpawnTaskDeferredExt
+// WorldTaskSchedule
 //==================================================================================================
 
-pub trait SpawnTaskDeferredExt {
-    fn spawn_task<T, F>(&mut self, task: T)
-    where
-        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = ()> + Send + 'static;
+#[derive(Default, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum WorldTaskSchedule {
+    #[default]
+    Update,
+    FixedUpdate,
 }
 
-impl SpawnTaskDeferredExt for Commands<'_, '_> {
-    fn spawn_task<T, F>(&mut self, task: T)
-    where
-        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
-        F: Future<Output = ()> + Send + 'static,
-    {
-        self.queue(move |world: &mut World| {
-            world.spawn_task(task).detach();
-        });
+//==================================================================================================
+// WorldTaskLoop
+//==================================================================================================
+
+pub enum WorldTaskLoop<R = ()> {
+    /// If `[WorldTaskDelay::is_zero]` is ture, it will immediately start with the next iteration.
+    Continue(WorldTaskDelay),
+    Return(R),
+}
+
+impl<R: Clone> Clone for WorldTaskLoop<R> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Continue(delay) => Self::Continue(*delay),
+            Self::Return(result) => Self::Return(result.clone()),
+        }
     }
 }
+
+impl<R: Copy> Copy for WorldTaskLoop<R> {}
 
 //==================================================================================================
 // AsyncContext
@@ -369,12 +290,12 @@ impl SpawnTaskDeferredExt for Commands<'_, '_> {
 
 #[derive(Resource)]
 pub struct AsyncContext {
-    scheduled_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
-    scheduled_fixed_update_tasks: VecDeque<ScheduledWorldTask<Delay>>,
-    world_task_tx: mpsc::UnboundedSender<WorldTask>,
-    world_task_rx: mpsc::UnboundedReceiver<WorldTask>,
-    scheduled_world_task_tx: mpsc::UnboundedSender<ScheduledWorldTask<RunAfter>>,
-    scheduled_world_task_rx: mpsc::UnboundedReceiver<ScheduledWorldTask<RunAfter>>,
+    update_world_tasks: Vec<Option<WorldTaskFn>>,
+    fixed_update_world_tasks: Vec<Option<WorldTaskFn>>,
+    delayed_update_world_tasks: Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
+    delayed_fixed_update_world_tasks: Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
+    world_task_tx: mpsc::UnboundedSender<WorldTaskData>,
+    world_task_rx: mpsc::UnboundedReceiver<WorldTaskData>,
 }
 
 impl Drop for AsyncContext {
@@ -386,22 +307,183 @@ impl Drop for AsyncContext {
 impl AsyncContext {
     fn new() -> Self {
         let (world_task_tx, world_task_rx) = mpsc::unbounded();
-        let (scheduled_world_task_tx, scheduled_world_task_rx) = mpsc::unbounded();
 
         Self {
-            scheduled_update_tasks: VecDeque::default(),
-            scheduled_fixed_update_tasks: VecDeque::default(),
+            update_world_tasks: Vec::default(),
+            fixed_update_world_tasks: Vec::default(),
+            delayed_update_world_tasks: Vec::default(),
+            delayed_fixed_update_world_tasks: Vec::default(),
             world_task_tx,
             world_task_rx,
-            scheduled_world_task_tx,
-            scheduled_world_task_rx,
         }
     }
 
-    pub fn create_task_context(&self) -> AsyncTaskContext {
+    pub fn task_context(&self) -> AsyncTaskContext {
         AsyncTaskContext {
             world_task_tx: self.world_task_tx.clone(),
-            scheduled_world_task_tx: self.scheduled_world_task_tx.clone(),
+        }
+    }
+
+    fn run_update_world_tasks(world: &mut World) -> bool {
+        let mut this = world.resource_mut::<Self>();
+
+        let mut update_world_tasks = Vec::new();
+        let mut delayed_update_world_tasks = Vec::new();
+
+        mem::swap(&mut this.update_world_tasks, &mut update_world_tasks);
+        mem::swap(
+            &mut this.delayed_update_world_tasks,
+            &mut delayed_update_world_tasks,
+        );
+
+        Self::run_world_tasks_helper(
+            world,
+            &mut update_world_tasks,
+            &mut delayed_update_world_tasks,
+        );
+
+        let mut this = world.resource_mut::<Self>();
+
+        mem::swap(&mut this.update_world_tasks, &mut update_world_tasks);
+        mem::swap(
+            &mut this.delayed_update_world_tasks,
+            &mut delayed_update_world_tasks,
+        );
+
+        this.update_world_tasks.append(&mut update_world_tasks);
+        this.delayed_update_world_tasks
+            .append(&mut delayed_update_world_tasks);
+
+        !this.update_world_tasks.is_empty()
+    }
+
+    fn run_fixed_update_world_tasks(world: &mut World) -> bool {
+        let mut this = world.resource_mut::<Self>();
+
+        let mut fixed_update_world_tasks = Vec::new();
+        let mut delayed_fixed_update_world_tasks = Vec::new();
+
+        mem::swap(
+            &mut this.fixed_update_world_tasks,
+            &mut fixed_update_world_tasks,
+        );
+        mem::swap(
+            &mut this.delayed_fixed_update_world_tasks,
+            &mut delayed_fixed_update_world_tasks,
+        );
+
+        Self::run_world_tasks_helper(
+            world,
+            &mut fixed_update_world_tasks,
+            &mut delayed_fixed_update_world_tasks,
+        );
+
+        let mut this = world.resource_mut::<Self>();
+
+        mem::swap(
+            &mut this.fixed_update_world_tasks,
+            &mut fixed_update_world_tasks,
+        );
+        mem::swap(
+            &mut this.delayed_fixed_update_world_tasks,
+            &mut delayed_fixed_update_world_tasks,
+        );
+
+        this.fixed_update_world_tasks
+            .append(&mut fixed_update_world_tasks);
+        this.delayed_fixed_update_world_tasks
+            .append(&mut delayed_fixed_update_world_tasks);
+
+        !this.fixed_update_world_tasks.is_empty()
+    }
+
+    fn run_world_tasks_helper(
+        world: &mut World,
+        world_tasks: &mut Vec<Option<WorldTaskFn>>,
+        delayed_world_tasks: &mut Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
+    ) {
+        world_tasks.retain_mut(|task| {
+            if let Some(task) = task.take() {
+                match task {
+                    WorldTaskFn::Once(f) => f(world),
+                    WorldTaskFn::Loop(mut f) => {
+                        while let Some(delay) = f(world) {
+                            if !delay.is_zero() {
+                                delayed_world_tasks.push((Some(WorldTaskFn::Loop(f)), delay));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            task.is_some()
+        })
+    }
+
+    fn update_delayed_world_tasks(&mut self, delta: Duration) {
+        Self::update_delayed_world_tasks_helper(
+            &mut self.update_world_tasks,
+            &mut self.delayed_update_world_tasks,
+            delta,
+        )
+    }
+
+    fn fixed_update_delayed_world_tasks(&mut self, delta: Duration) {
+        Self::update_delayed_world_tasks_helper(
+            &mut self.fixed_update_world_tasks,
+            &mut self.delayed_fixed_update_world_tasks,
+            delta,
+        )
+    }
+
+    fn update_delayed_world_tasks_helper(
+        world_tasks: &mut Vec<Option<WorldTaskFn>>,
+        delayed_world_tasks: &mut Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
+        delta: Duration,
+    ) {
+        delayed_world_tasks.retain_mut(|(task, delay)| {
+            match delay {
+                WorldTaskDelay::None => (),
+                WorldTaskDelay::Ticks(ticks) => *ticks = ticks.saturating_sub(1),
+                WorldTaskDelay::Elapsed(elapsed) => *elapsed = elapsed.saturating_sub(delta),
+            }
+
+            if delay.is_zero()
+                && let Some(task) = task.take()
+            {
+                world_tasks.push(Some(task));
+            }
+
+            task.is_some()
+        });
+    }
+
+    fn receive_world_tasks(&mut self) {
+        while let Ok(world_task) = self.world_task_rx.try_recv() {
+            let WorldTaskData {
+                task,
+                delay,
+                schedule,
+            } = world_task;
+
+            match schedule {
+                WorldTaskSchedule::Update => {
+                    if delay.is_zero() {
+                        self.update_world_tasks.push(Some(task));
+                    } else {
+                        self.delayed_update_world_tasks.push((Some(task), delay));
+                    }
+                }
+                WorldTaskSchedule::FixedUpdate => {
+                    if delay.is_zero() {
+                        self.fixed_update_world_tasks.push(Some(task));
+                    } else {
+                        self.delayed_fixed_update_world_tasks
+                            .push((Some(task), delay));
+                    }
+                }
+            };
         }
     }
 }
@@ -412,45 +494,103 @@ impl AsyncContext {
 
 #[derive(Clone)]
 pub struct AsyncTaskContext {
-    world_task_tx: mpsc::UnboundedSender<WorldTask>,
-    scheduled_world_task_tx: mpsc::UnboundedSender<ScheduledWorldTask<RunAfter>>,
+    world_task_tx: mpsc::UnboundedSender<WorldTaskData>,
 }
 
 impl AsyncTaskContext {
-    pub fn with_world<F, R>(&self, f: F) -> WorldTaskResultReceiver<R>
+    pub fn world_task_once<F, R>(&self, f: F) -> WorldTask<R>
     where
         F: FnOnce(&mut World) -> R + Send + Sync + 'static,
         R: Send + 'static,
     {
-        WorldTaskResultReceiver::new(&self.world_task_tx, f)
+        WorldTask::once(self.clone(), f)
     }
 
-    pub fn with_world_scheduled<F, R>(&self, delay: RunAfter, f: F) -> WorldTaskResultReceiver<R>
+    pub fn world_task_looped<F, R>(&self, f: F) -> WorldTask<R>
     where
-        F: FnOnce(&mut World) -> R + Send + Sync + 'static,
+        F: FnMut(&mut World) -> WorldTaskLoop<R> + Send + Sync + 'static,
         R: Send + 'static,
     {
-        let ready_to_queue = match &delay {
-            RunAfter::UpdateTicks(ticks) | RunAfter::FixedUpdateTicks(ticks) => *ticks == 0,
-
-            RunAfter::UpdateElapsed(duration) | RunAfter::FixedUpdateElapsed(duration) => {
-                duration.is_zero()
-            }
-
-            RunAfter::UpdateElapsedSecs(secs) | RunAfter::FixedUpdateElapsedSecs(secs) => {
-                *secs <= 0.0
-            }
-        };
-
-        if ready_to_queue {
-            self.with_world(f)
-        } else {
-            WorldTaskResultReceiver::new_scheduled(delay, &self.scheduled_world_task_tx, f)
-        }
+        WorldTask::looped(self.clone(), f)
     }
 
-    pub fn delay(&self, delay: RunAfter) -> WorldTaskResultReceiver<()> {
-        self.with_world_scheduled(delay, |_| {})
+    pub fn delay(&self, delay: WorldTaskDelay) -> WorldTask<()> {
+        WorldTask::once(self.clone(), |_| {}).delay(delay)
+    }
+
+    fn send(&self, world_task: WorldTaskData) {
+        let _ = self.world_task_tx.unbounded_send(world_task);
+    }
+}
+
+//==================================================================================================
+// SpawnAsyncTaskExt
+//==================================================================================================
+
+pub trait SpawnAsyncTaskExt {
+    fn spawn_async_task<T, F, R>(&self, task: T) -> Task<R>
+    where
+        T: FnOnce(AsyncTaskContext) -> F,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static;
+}
+
+impl SpawnAsyncTaskExt for World {
+    fn spawn_async_task<T, F, R>(&self, task: T) -> Task<R>
+    where
+        T: FnOnce(AsyncTaskContext) -> F,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let cx = self.resource::<AsyncContext>().task_context();
+        AsyncComputeTaskPool::get().spawn(task(cx))
+    }
+}
+
+impl SpawnAsyncTaskExt for AsyncContext {
+    fn spawn_async_task<T, F, R>(&self, task: T) -> Task<R>
+    where
+        T: FnOnce(AsyncTaskContext) -> F,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let cx = self.task_context();
+        AsyncComputeTaskPool::get().spawn(task(cx))
+    }
+}
+
+impl SpawnAsyncTaskExt for AsyncTaskContext {
+    fn spawn_async_task<T, F, R>(&self, task: T) -> Task<R>
+    where
+        T: FnOnce(AsyncTaskContext) -> F,
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let this = self.clone();
+        AsyncComputeTaskPool::get().spawn(task(this))
+    }
+}
+
+//==================================================================================================
+// SpawnAsyncTaskDeferredExt
+//==================================================================================================
+
+pub trait SpawnAsyncTaskDeferredExt {
+    fn spawn_async_task<T, F>(&mut self, task: T)
+    where
+        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
+        F: Future<Output = ()> + Send + 'static;
+}
+
+impl SpawnAsyncTaskDeferredExt for Commands<'_, '_> {
+    fn spawn_async_task<T, F>(&mut self, task: T)
+    where
+        T: FnOnce(AsyncTaskContext) -> F + Send + 'static,
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.queue(move |world: &mut World| {
+            world.spawn_async_task(task).detach();
+        });
     }
 }
 

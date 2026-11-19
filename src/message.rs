@@ -66,41 +66,22 @@ where
     M: Message + Clone,
 {
     pub fn new(world: &World) -> Self {
-        fn read_and_reschedule<MInner>(
-            world: &mut World,
-            quit_rx: Arc<AtomicBool>,
-            message_tx: mpsc::UnboundedSender<MInner>,
-            mut reader: MessageCursor<MInner>,
-            cx: AsyncTaskContext,
-        ) where
-            MInner: Message + Clone,
-        {
+        let quit_tx = Arc::new(AtomicBool::new(false));
+        let quit_rx = quit_tx.clone();
+        let (message_tx, message_rx) = mpsc::unbounded();
+        let mut reader = MessageCursor::default();
+
+        let cx = world.resource::<AsyncContext>().task_context();
+        cx.world_task_looped(move |world| {
             if quit_rx.load(Ordering::Relaxed) {
-                return;
+                return WorldTaskLoop::Return(());
             }
 
-            for message in reader.read(world.resource::<Messages<MInner>>()) {
+            for message in reader.read(world.resource::<Messages<M>>()) {
                 let _ = message_tx.unbounded_send(message.clone());
             }
 
-            let cx_clone = cx.clone();
-            cx.with_world_scheduled(RunAfter::UpdateTicks(1), move |world| {
-                read_and_reschedule(world, quit_rx, message_tx, reader, cx_clone);
-            })
-            .detach();
-        }
-
-        let quit_tx = Arc::new(AtomicBool::new(false));
-        let quit_rx = quit_tx.clone();
-
-        let (message_tx, message_rx) = mpsc::unbounded();
-
-        let reader = MessageCursor::default();
-
-        let cx = world.resource::<AsyncContext>().create_task_context();
-        let cx_clone = cx.clone();
-        cx.with_world(move |world| {
-            read_and_reschedule::<M>(world, quit_rx, message_tx, reader, cx_clone);
+            WorldTaskLoop::Continue(WorldTaskDelay::Ticks(1))
         })
         .detach();
 

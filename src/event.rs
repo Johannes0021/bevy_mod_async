@@ -145,7 +145,7 @@ impl<E: EventPattern> EventStream<E> {
 
         let observer = self.observer;
         self.cx
-            .with_world(move |world| {
+            .world_task_once(move |world| {
                 if let Ok(observer_mut) = world.get_entity_mut(observer) {
                     observer_mut.despawn()
                 }
@@ -167,7 +167,7 @@ where
         struct EventFutureDespawnMarker;
 
         let (event_tx, event_rx) = mpsc::unbounded();
-        let cx = world.resource::<AsyncContext>().create_task_context();
+        let cx = world.resource::<AsyncContext>().task_context();
 
         let event_tx_clone = event_tx.clone();
         let mut observer = world.spawn(
