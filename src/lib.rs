@@ -273,6 +273,7 @@ impl Plugin for AsyncTaskPlugin {
                 AsyncTaskBeforeFixedUpdate,
                 fixed_update_world_tasks.in_set(AsyncTaskSystems),
             )
+            // Receive the last time for this frame.
             .add_systems(
                 FixedLast,
                 fixed_update_receive_world_tasks.in_set(AsyncTaskSystems),
@@ -281,6 +282,7 @@ impl Plugin for AsyncTaskPlugin {
                 AsyncTaskBeforeUpdate,
                 update_world_tasks.in_set(AsyncTaskSystems),
             )
+            // Receive the last time for this frame.
             .add_systems(Last, update_receive_world_tasks.in_set(AsyncTaskSystems));
     }
 }
