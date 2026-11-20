@@ -145,7 +145,7 @@ impl<E: EventPattern> EventStream<E> {
 
         let observer = self.observer;
         self.cx
-            .world_task_once(move |world| {
+            .world_task(move |world| {
                 if let Ok(observer_mut) = world.get_entity_mut(observer) {
                     observer_mut.despawn()
                 }

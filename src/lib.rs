@@ -1,3 +1,218 @@
+//! # Spawn async task:
+//! ```rust
+//! use bevy::{prelude::*, tasks::Task};
+//! use bevy_mod_async::prelude::*;
+//!
+//! fn my_sync_work(world: &mut World) {
+//!     // Works for [`World`], [`AsyncContext`], [`AsyncTaskContext`]:
+//!     let task: Task<()> = world.spawn_async_task(async |cx: AsyncTaskContext| {});
+//!     task.detach();
+//!
+//!     // Works for [`Commands`]:
+//!     let mut commands = world.commands();
+//!     commands.spawn_async_task(async |cx: AsyncTaskContext| {}); // Calls detach deferred.
+//! }
+//! ```
+//!
+//! # Access `&mut World` in the async task:
+//! ```rust
+//! use bevy::prelude::*;
+//! use bevy_mod_async::prelude::*;
+//! use std::time::Duration;
+//!
+//! async fn my_async_work(cx: AsyncTaskContext) {
+//!     // Working with [`WorldTask`] once.
+//!     let entity_count = cx.world_task(|world| world.entity_count())
+//!         // Delay the task:
+//!         // Delays are app loop dependent and have the same timing issue like simple app loop
+//!         // timers!
+//!         // Any delay where [`WorldTaskDelay::is_zero`] is false is guaranteed to delay atleast
+//!         // one loop iteration.
+//!         .delay(WorldTaskDelay::None) // The default
+//!         .delay(WorldTaskDelay::Ticks(1)) // At least 1 update loop iter must complete.
+//!         .delay(WorldTaskDelay::Elapsed(Duration::from_secs(1)))
+//!         .delay(WorldTaskDelay::secs(2.1))
+//!         // Specify the the schedule:
+//!         .schedule(WorldTaskSchedule::Update) // The default
+//!         .schedule(WorldTaskSchedule::FixedUpdate)
+//!         // The [`WorldTask`] is a future that starts with `.await`, `.spawn()`, `.detach()` or
+//!         // if you poll it.
+//!         //.spawn() // Start the task and give us the receiver (can awaited later).
+//!         //.detach(); // Start the task, we don't want to wait for it.
+//!         .await; // Start now and wait for the result.
+//!     info!("World contains {entity_count} entities.");
+//!
+//!     // Working with [`WorldTask`] loop.
+//!     // You can configure them like above.
+//!     let mut i = 0;
+//!     let count = cx.world_task_looped(move |world| {
+//!         i += 1;
+//!         if i >= 10 {
+//!             // End the loop and return a result.
+//!             return WorldTaskLoop::Return(i);
+//!         }
+//!         // Continue the result after a delay.
+//!         // Delays are app loop dependent and have the same timing issue like simple app loop
+//!         // timers!
+//!         WorldTaskLoop::Continue(WorldTaskDelay::secs(2.1))
+//!     }).await;
+//!     info!("Looped {count} time(s).");
+//! }
+//! ```
+//!
+//! # Awaiting [`Event`], [`EntityEvent`] and [`Message`].
+//! ```rust
+//! use bevy::prelude::*;
+//! use bevy_mod_async::prelude::*;
+//!
+//! #[derive(Event, Clone)]
+//! struct SomeEvent;
+//!
+//! #[derive(EntityEvent, Clone)]
+//! struct SomeEntityEvent(Entity);
+//!
+//! #[derive(Message, Clone)]
+//! struct SomeMessage(String);
+//!
+//! async fn my_async_work(cx: AsyncTaskContext, e0: Entity, e1: Entity, e2: Entity) {
+//!     // Await event stream.
+//!     // The stream starts at creation time and misses earlier events.
+//!     let mut events = cx.world_task(SomeEvent::event_stream).await;
+//!     for _ in 0..10 {
+//!         let _: SomeEvent = events.next_event().await;
+//!     }
+//!     info!("Received 10 SomeEvents (EventStream).");
+//!
+//!     // Await single event.
+//!     // The stream starts at creation time and misses earlier events.
+//!     let event = cx.world_task(SomeEvent::to_future).await;
+//!     let _: SomeEvent = event.await;
+//!     info!("SomeEvent occured.");
+//!
+//!     // Await entity event stream.
+//!     // The stream starts at creation time and misses earlier events.
+//!     let mut entity_events = cx.world_task(move |world| {
+//!         let _ = [e0, e1, e2].event_stream::<SomeEntityEvent>(world); // Multiple entities
+//!         e0.event_stream::<SomeEntityEvent>(world) // Single entity
+//!     }).await;
+//!     for _ in 0..10 {
+//!         let _: SomeEntityEvent = entity_events.next_event().await;
+//!     }
+//!     info!("Received 10 SomeEntityEvents (EventStream).");
+//!
+//!     // Await single entity event.
+//!     // The stream starts at creation time and misses earlier events.
+//!     let entity_event = cx.world_task(move |world| {
+//!         let _ = [e0, e1, e2].observe_future::<SomeEntityEvent>(world); // Multiple entities
+//!         e0.observe_future::<SomeEntityEvent>(world) // Single entity
+//!     }).await;
+//!     let _: SomeEntityEvent = entity_event.await;
+//!     info!("SomeEntityEvent occured.");
+//!
+//!     // Await message stream.
+//!     // The stream starts at creation time and may miss earlier messages.
+//!     let mut messages = cx.world_task(|world| SomeMessage::message_stream(world)).await;
+//!     for _ in 0..10 {
+//!         let some_message: SomeMessage = messages.next_message().await;
+//!         info!("Received message (MessageStream): {}", some_message.0);
+//!     }
+//!
+//!     // Await single message.
+//!     let message = cx.world_task(|world| SomeMessage::to_future(world)).await;
+//!     info!("Received message: {}", message.await.0);
+//! }
+//! ```
+//!
+//! # Example for waiting for assets:
+//! ```rust
+//! use bevy::prelude::*;
+//! use bevy_mod_async::prelude::*;
+//!
+//! fn my_startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
+//!     let background: Handle<Image> = asset_server.load("background.png");
+//!     let logo: Handle<Image> = asset_server.load("logo.png");
+//!
+//!     let asset_server = asset_server.clone();
+//!     let assets = [
+//!         background.clone().untyped(),
+//!         logo.clone().untyped(),
+//!     ];
+//!     commands.spawn_async_task(async move |cx| {
+//!         wait_for_assets(&asset_server, assets).await;
+//!         cx.world_task(|world| {
+//!             world.spawn(Sprite::from_image(background));
+//!             world.spawn((
+//!                 Sprite::from_image(logo),
+//!                 Transform::from_xyz(0.0, 0.0, 1.0),
+//!             ));
+//!         }).await;
+//!     });
+//! }
+//!
+//! async fn wait_for_assets(
+//!     asset_server: &AssetServer,
+//!     assets: impl IntoIterator<Item = UntypedHandle>,
+//! ) {
+//!     for asset in assets {
+//!         if let Err(e) = asset_server.wait_for_asset_untyped(&asset).await {
+//!             error!("Failed to load audio: {e}");
+//!         };
+//!     }
+//! }
+//! ```
+//!
+//! # App loop usage:
+//! This is just an example you can abstract things in better organized structures or systems.
+//! ```rust
+//! use bevy::prelude::*;
+//! use bevy_mod_async::prelude::*;
+//!
+//! #[derive(EntityEvent, Clone)]
+//! struct ButtonUp(Entity);
+//!
+//! async fn app_loop(
+//!     cx: &AsyncTaskContext,
+//!     animation_player: Entity,
+//!     play_button: Entity,
+//!     settings_button: Entity,
+//! ) {
+//!     animation_player_wait_all_finished(cx, animation_player).await;
+//!     let button_up = read_input(cx, play_button, settings_button).await;
+//!     if button_up == play_button {
+//!         // play
+//!     } else if button_up == settings_button {
+//!         // settings
+//!     }
+//! }
+//!
+//! async fn animation_player_wait_all_finished(cx: &AsyncTaskContext, entity: Entity) {
+//!     cx.world_task_looped(move |world| {
+//!         let all_finished = world
+//!             .get::<AnimationPlayer>(entity)
+//!             .map(|animation_player| animation_player.all_finished())
+//!             .unwrap_or_default();
+//!
+//!         if all_finished {
+//!             return WorldTaskLoop::Return(());
+//!         }
+//!
+//!         WorldTaskLoop::Continue(WorldTaskDelay::Ticks(1))
+//!     }).await
+//! }
+//!
+//! async fn read_input(
+//!     cx: &AsyncTaskContext,
+//!     play_button: Entity,
+//!     settings_button: Entity,
+//! ) -> Entity {
+//!     // this could also be done with futures::select!
+//!     let button_up_fut = cx.world_task(move |world| {
+//!         [play_button, settings_button].observe_future::<ButtonUp>(world)
+//!     }).await;
+//!     button_up_fut.await.0
+//! }
+//! ```
+
 use bevy_app::{FixedMainScheduleOrder, MainScheduleOrder, prelude::*};
 use bevy_ecs::{
     prelude::*,
@@ -62,44 +277,43 @@ impl Plugin for AsyncTaskPlugin {
                 AsyncTaskBeforeFixedUpdate,
                 fixed_update_world_tasks.in_set(AsyncTaskSystems),
             )
-            .add_systems(FixedLast, receive_world_tasks.in_set(AsyncTaskSystems))
+            .add_systems(
+                FixedLast,
+                fixed_update_receive_world_tasks.in_set(AsyncTaskSystems),
+            )
             .add_systems(
                 AsyncTaskBeforeUpdate,
                 update_world_tasks.in_set(AsyncTaskSystems),
             )
-            .add_systems(Last, receive_world_tasks.in_set(AsyncTaskSystems));
+            .add_systems(Last, update_receive_world_tasks.in_set(AsyncTaskSystems));
     }
 }
 
 fn fixed_update_world_tasks(world: &mut World) {
     let fixed_time = world.resource::<Time<Fixed>>();
     let delta = fixed_time.delta();
+    AsyncContext::update(world, delta, |cx| &mut cx.fixed_update_pipeline);
+}
 
-    let mut cx = world.resource_mut::<AsyncContext>();
-    cx.fixed_update_delayed_world_tasks(delta);
-
-    while AsyncContext::run_fixed_update_world_tasks(world) {}
+fn fixed_update_receive_world_tasks(mut cx: ResMut<AsyncContext>) {
+    cx.fixed_update_pipeline.receive();
 }
 
 fn update_world_tasks(world: &mut World) {
     let time = world.resource::<Time>();
     let delta = time.delta();
-
-    let mut cx = world.resource_mut::<AsyncContext>();
-    cx.update_delayed_world_tasks(delta);
-
-    while AsyncContext::run_update_world_tasks(world) {}
+    AsyncContext::update(world, delta, |cx| &mut cx.update_pipeline);
 }
 
-fn receive_world_tasks(mut cx: ResMut<AsyncContext>) {
-    cx.receive_world_tasks();
+fn update_receive_world_tasks(mut cx: ResMut<AsyncContext>) {
+    cx.update_pipeline.receive();
 }
 
 //==================================================================================================
 // WorldTask
 //==================================================================================================
 
-#[must_use = "futures do nothing unless you `.await`, `.detach()` or poll them"]
+#[must_use = "futures do nothing unless you `.await`, `.spawn()`, `.detach()` or poll them"]
 pub struct WorldTask<R = ()> {
     data: Option<WorldTaskData>,
     cx: AsyncTaskContext,
@@ -290,12 +504,8 @@ impl<R: Copy> Copy for WorldTaskLoop<R> {}
 
 #[derive(Resource)]
 pub struct AsyncContext {
-    update_world_tasks: Vec<Option<WorldTaskFn>>,
-    fixed_update_world_tasks: Vec<Option<WorldTaskFn>>,
-    delayed_update_world_tasks: Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
-    delayed_fixed_update_world_tasks: Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
-    world_task_tx: mpsc::UnboundedSender<WorldTaskData>,
-    world_task_rx: mpsc::UnboundedReceiver<WorldTaskData>,
+    update_pipeline: WorldTaskPipeline,
+    fixed_update_pipeline: WorldTaskPipeline,
 }
 
 impl Drop for AsyncContext {
@@ -306,102 +516,112 @@ impl Drop for AsyncContext {
 
 impl AsyncContext {
     fn new() -> Self {
-        let (world_task_tx, world_task_rx) = mpsc::unbounded();
-
         Self {
-            update_world_tasks: Vec::default(),
-            fixed_update_world_tasks: Vec::default(),
-            delayed_update_world_tasks: Vec::default(),
-            delayed_fixed_update_world_tasks: Vec::default(),
-            world_task_tx,
-            world_task_rx,
+            update_pipeline: WorldTaskPipeline::new(),
+            fixed_update_pipeline: WorldTaskPipeline::new(),
         }
     }
 
     pub fn task_context(&self) -> AsyncTaskContext {
         AsyncTaskContext {
-            world_task_tx: self.world_task_tx.clone(),
+            update_world_task_tx: self.update_pipeline.sender.clone(),
+            fixed_update_world_task_tx: self.fixed_update_pipeline.sender.clone(),
         }
     }
 
-    fn run_update_world_tasks(world: &mut World) -> bool {
-        let mut this = world.resource_mut::<Self>();
-
-        let mut update_world_tasks = Vec::new();
-        let mut delayed_update_world_tasks = Vec::new();
-
-        mem::swap(&mut this.update_world_tasks, &mut update_world_tasks);
-        mem::swap(
-            &mut this.delayed_update_world_tasks,
-            &mut delayed_update_world_tasks,
-        );
-
-        Self::run_world_tasks_helper(
-            world,
-            &mut update_world_tasks,
-            &mut delayed_update_world_tasks,
-        );
-
-        let mut this = world.resource_mut::<Self>();
-
-        mem::swap(&mut this.update_world_tasks, &mut update_world_tasks);
-        mem::swap(
-            &mut this.delayed_update_world_tasks,
-            &mut delayed_update_world_tasks,
-        );
-
-        this.update_world_tasks.append(&mut update_world_tasks);
-        this.delayed_update_world_tasks
-            .append(&mut delayed_update_world_tasks);
-
-        !this.update_world_tasks.is_empty()
-    }
-
-    fn run_fixed_update_world_tasks(world: &mut World) -> bool {
-        let mut this = world.resource_mut::<Self>();
-
-        let mut fixed_update_world_tasks = Vec::new();
-        let mut delayed_fixed_update_world_tasks = Vec::new();
-
-        mem::swap(
-            &mut this.fixed_update_world_tasks,
-            &mut fixed_update_world_tasks,
-        );
-        mem::swap(
-            &mut this.delayed_fixed_update_world_tasks,
-            &mut delayed_fixed_update_world_tasks,
-        );
-
-        Self::run_world_tasks_helper(
-            world,
-            &mut fixed_update_world_tasks,
-            &mut delayed_fixed_update_world_tasks,
-        );
-
-        let mut this = world.resource_mut::<Self>();
-
-        mem::swap(
-            &mut this.fixed_update_world_tasks,
-            &mut fixed_update_world_tasks,
-        );
-        mem::swap(
-            &mut this.delayed_fixed_update_world_tasks,
-            &mut delayed_fixed_update_world_tasks,
-        );
-
-        this.fixed_update_world_tasks
-            .append(&mut fixed_update_world_tasks);
-        this.delayed_fixed_update_world_tasks
-            .append(&mut delayed_fixed_update_world_tasks);
-
-        !this.fixed_update_world_tasks.is_empty()
-    }
-
-    fn run_world_tasks_helper(
+    fn update(
         world: &mut World,
-        world_tasks: &mut Vec<Option<WorldTaskFn>>,
-        delayed_world_tasks: &mut Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
+        delta: Duration,
+        cx_pipeline: fn(&mut AsyncContext) -> &mut WorldTaskPipeline,
     ) {
+        let mut cx = world.resource_mut::<AsyncContext>();
+        let pipeline = cx_pipeline(&mut cx);
+        pipeline.update_delays(delta);
+
+        loop {
+            let mut cx = world.resource_mut::<AsyncContext>();
+            let pipeline = cx_pipeline(&mut cx);
+            pipeline.receive();
+
+            WorldTaskPipeline::drain_world_tasks(world, cx_pipeline);
+
+            let mut cx = world.resource_mut::<AsyncContext>();
+            let pipeline = cx_pipeline(&mut cx);
+            if !pipeline.needs_to_drain_world_tasks() {
+                break;
+            }
+        }
+    }
+}
+
+//==================================================================================================
+// WorldTaskPipeline
+//==================================================================================================
+
+struct WorldTaskPipeline {
+    world_tasks: Vec<Option<WorldTaskFn>>,
+    delayed_world_tasks: Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
+    sender: mpsc::UnboundedSender<(Option<WorldTaskFn>, WorldTaskDelay)>,
+    receiver: mpsc::UnboundedReceiver<(Option<WorldTaskFn>, WorldTaskDelay)>,
+}
+
+impl WorldTaskPipeline {
+    fn new() -> Self {
+        let (sender, receiver) = mpsc::unbounded();
+
+        Self {
+            world_tasks: Vec::default(),
+            delayed_world_tasks: Vec::default(),
+            sender,
+            receiver,
+        }
+    }
+
+    fn receive(&mut self) {
+        while let Ok((Some(task), delay)) = self.receiver.try_recv() {
+            if delay.is_zero() {
+                self.world_tasks.push(Some(task));
+            } else {
+                self.delayed_world_tasks.push((Some(task), delay));
+            }
+        }
+    }
+
+    fn update_delays(&mut self, delta: Duration) {
+        self.delayed_world_tasks.retain_mut(|(task, delay)| {
+            match delay {
+                WorldTaskDelay::None => (),
+                WorldTaskDelay::Ticks(ticks) => *ticks = ticks.saturating_sub(1),
+                WorldTaskDelay::Elapsed(elapsed) => *elapsed = elapsed.saturating_sub(delta),
+            }
+
+            if delay.is_zero()
+                && let Some(task) = task.take()
+            {
+                self.world_tasks.push(Some(task));
+            }
+
+            task.is_some()
+        })
+    }
+
+    fn needs_to_drain_world_tasks(&self) -> bool {
+        !self.world_tasks.is_empty()
+    }
+
+    fn drain_world_tasks(
+        world: &mut World,
+        cx_pipeline: fn(&mut AsyncContext) -> &mut WorldTaskPipeline,
+    ) {
+        let mut cx = world.resource_mut::<AsyncContext>();
+
+        let mut world_tasks = Vec::new();
+        let mut delayed_world_tasks = Vec::new();
+
+        let pipeline = cx_pipeline(&mut cx);
+        mem::swap(&mut pipeline.world_tasks, &mut world_tasks);
+        mem::swap(&mut pipeline.delayed_world_tasks, &mut delayed_world_tasks);
+
         world_tasks.retain_mut(|task| {
             if let Some(task) = task.take() {
                 match task {
@@ -418,73 +638,18 @@ impl AsyncContext {
             }
 
             task.is_some()
-        })
-    }
-
-    fn update_delayed_world_tasks(&mut self, delta: Duration) {
-        Self::update_delayed_world_tasks_helper(
-            &mut self.update_world_tasks,
-            &mut self.delayed_update_world_tasks,
-            delta,
-        )
-    }
-
-    fn fixed_update_delayed_world_tasks(&mut self, delta: Duration) {
-        Self::update_delayed_world_tasks_helper(
-            &mut self.fixed_update_world_tasks,
-            &mut self.delayed_fixed_update_world_tasks,
-            delta,
-        )
-    }
-
-    fn update_delayed_world_tasks_helper(
-        world_tasks: &mut Vec<Option<WorldTaskFn>>,
-        delayed_world_tasks: &mut Vec<(Option<WorldTaskFn>, WorldTaskDelay)>,
-        delta: Duration,
-    ) {
-        delayed_world_tasks.retain_mut(|(task, delay)| {
-            match delay {
-                WorldTaskDelay::None => (),
-                WorldTaskDelay::Ticks(ticks) => *ticks = ticks.saturating_sub(1),
-                WorldTaskDelay::Elapsed(elapsed) => *elapsed = elapsed.saturating_sub(delta),
-            }
-
-            if delay.is_zero()
-                && let Some(task) = task.take()
-            {
-                world_tasks.push(Some(task));
-            }
-
-            task.is_some()
         });
-    }
 
-    fn receive_world_tasks(&mut self) {
-        while let Ok(world_task) = self.world_task_rx.try_recv() {
-            let WorldTaskData {
-                task,
-                delay,
-                schedule,
-            } = world_task;
+        let mut cx = world.resource_mut::<AsyncContext>();
 
-            match schedule {
-                WorldTaskSchedule::Update => {
-                    if delay.is_zero() {
-                        self.update_world_tasks.push(Some(task));
-                    } else {
-                        self.delayed_update_world_tasks.push((Some(task), delay));
-                    }
-                }
-                WorldTaskSchedule::FixedUpdate => {
-                    if delay.is_zero() {
-                        self.fixed_update_world_tasks.push(Some(task));
-                    } else {
-                        self.delayed_fixed_update_world_tasks
-                            .push((Some(task), delay));
-                    }
-                }
-            };
-        }
+        let pipeline = cx_pipeline(&mut cx);
+        mem::swap(&mut pipeline.world_tasks, &mut world_tasks);
+        mem::swap(&mut pipeline.delayed_world_tasks, &mut delayed_world_tasks);
+
+        pipeline.world_tasks.append(&mut world_tasks);
+        pipeline
+            .delayed_world_tasks
+            .append(&mut delayed_world_tasks);
     }
 }
 
@@ -494,11 +659,12 @@ impl AsyncContext {
 
 #[derive(Clone)]
 pub struct AsyncTaskContext {
-    world_task_tx: mpsc::UnboundedSender<WorldTaskData>,
+    update_world_task_tx: mpsc::UnboundedSender<(Option<WorldTaskFn>, WorldTaskDelay)>,
+    fixed_update_world_task_tx: mpsc::UnboundedSender<(Option<WorldTaskFn>, WorldTaskDelay)>,
 }
 
 impl AsyncTaskContext {
-    pub fn world_task_once<F, R>(&self, f: F) -> WorldTask<R>
+    pub fn world_task<F, R>(&self, f: F) -> WorldTask<R>
     where
         F: FnOnce(&mut World) -> R + Send + Sync + 'static,
         R: Send + 'static,
@@ -519,7 +685,18 @@ impl AsyncTaskContext {
     }
 
     fn send(&self, world_task: WorldTaskData) {
-        let _ = self.world_task_tx.unbounded_send(world_task);
+        let WorldTaskData {
+            task,
+            delay,
+            schedule,
+        } = world_task;
+
+        let sender = match schedule {
+            WorldTaskSchedule::Update => &self.update_world_task_tx,
+            WorldTaskSchedule::FixedUpdate => &self.fixed_update_world_task_tx,
+        };
+
+        let _ = sender.unbounded_send((Some(task), delay));
     }
 }
 
