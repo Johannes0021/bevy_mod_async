@@ -246,10 +246,6 @@ pub mod prelude {
     };
 }
 
-//==================================================================================================
-// AsyncTaskPlugin
-//==================================================================================================
-
 pub struct AsyncTaskPlugin;
 
 #[derive(ScheduleLabel, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -536,6 +532,7 @@ impl AsyncContext {
     ) {
         let mut cx = world.resource_mut::<AsyncContext>();
         let pipeline = cx_pipeline(&mut cx);
+        // Don't receive before updating delays to ensure there is at least 1 frame done.
         pipeline.update_delays(delta);
 
         loop {
